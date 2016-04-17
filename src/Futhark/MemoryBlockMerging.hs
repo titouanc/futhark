@@ -11,9 +11,10 @@ memoryBlockMerging = mapM_ lookAtFunction . progFunctions
 
 lookAtFunction :: FunDec -> IO ()
 lookAtFunction (FunDec fname rettype params body) = do
-  putStrLn $ "This is the function of name: " ++ nameToString fname
+  putStrLn $ "This is the of name: " ++ nameToString fname
   putStrLn $ "  and return type: " ++ pretty rettype
   putStrLn $ "  and parameters: " ++ pretty params
+  putStrLn $ "This is where John come in"
   let Body () bnds res = body
   putStrLn $ "The function returns this: " ++ pretty res
   putStrLn "Which is computed by these bindings: "

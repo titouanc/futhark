@@ -101,6 +101,7 @@ Library
                    Futhark.Internalise.TypesValues
                    Futhark.Interpreter
                    Futhark.MemoryBlockMerging
+                   Futhark.MemoryBlockDerping
                    Futhark.MonadFreshNames
                    Futhark.Optimise.CSE
                    Futhark.Optimise.DeadVarElim

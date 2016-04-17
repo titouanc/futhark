@@ -230,6 +230,9 @@ commandLineOptions =
   , Option [] ["memory-playground"]
     (NoArg $ Right $ \opts -> opts { futharkAction = ExplicitMemoryAction memoryAction })
     "Memory block playground."
+  , Option [] ["memory-try"]
+    (NoArg $ Right $ \opts -> opts { futharkAction = ExplicitMemoryAction memoryTry })
+    "Memory block fooling arround."
   , typedPassOption soacsProg Kernels firstOrderTransform "f"
   , soacsPassOption fuseSOACs "o"
   , soacsPassOption inlineAggressively []

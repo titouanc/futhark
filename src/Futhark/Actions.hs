@@ -7,6 +7,7 @@ module Futhark.Actions
   , seqCodeGenAction
   , rangeAction
   , memoryAction
+  , memoryTry
   )
 where
 
@@ -27,6 +28,7 @@ import Futhark.Representation.SOACS (SOACS)
 import Futhark.Representation.ExplicitMemory (ExplicitMemory)
 import Futhark.Interpreter
 import Futhark.MemoryBlockMerging
+import Futhark.MemoryBlockDerping
 import qualified Futhark.CodeGen.ImpGen.Sequential as ImpGenSequential
 import qualified Futhark.CodeGen.ImpGen.Kernels as ImpGenKernels
 import qualified Futhark.CodeGen.Backends.SequentialC as SequentialC
@@ -102,4 +104,11 @@ memoryAction =
   Action { actionName = "Memory playground"
          , actionDescription = "Memory block merging playground"
          , actionProcedure = liftIO . memoryBlockMerging
+         }
+
+memoryTry :: Action ExplicitMemory
+memoryTry =
+  Action { actionName = "Memory try"
+         , actionDescription = "Memory block fooling arround"
+         , actionProcedure = liftIO . memoryBlockDerping
          }
