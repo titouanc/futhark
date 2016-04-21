@@ -22,9 +22,3 @@ lookAtFunction (FunDec fname rettype params body) = do
           putStrLn $ "The binding with pattern: " ++ pretty pat
           putStrLn $ "And corresponding expression:\n" ++
                      unlines (map ("  "++) $ lines $ pretty e)
-
-let Fname = [fname]
-
-fillFunction :: FunDec -> Array
-
-printFunction :: Array -> IO ()
