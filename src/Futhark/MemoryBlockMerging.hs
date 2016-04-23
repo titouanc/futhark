@@ -1,4 +1,5 @@
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE FlexibleContexts #-} -- woah
 -- | Playground for work on merging memory blocks
 module Futhark.MemoryBlockMerging
        (memoryBlockMerging)
@@ -8,27 +9,31 @@ import Futhark.Representation.ExplicitMemory as ExplicitMemory
 import Data.Map (Map)
 import qualified Data.Map as Map -- otherwise ambiguity
 
+import Futhark.Representation.AST.Attributes.Names as Names
+import qualified Data.HashSet as HS
+import qualified Data.HashMap.Lazy as HM
+
 memoryBlockMerging :: Prog -> IO ()
 memoryBlockMerging = (mapM_ lookAtFunction) . progFunctions
 
 lookAtFunction :: FunDec -> IO ()
 lookAtFunction (FunDec fname rettype params body) = do
-  putStrLn $ "This is the function of name: " ++ nameToString fname
+  putStrLn $ "This is the of name: " ++ nameToString fname
   putStrLn $ "  and return type: " ++ pretty rettype
   putStrLn $ "  and parameters: " ++ pretty params
+  putStrLn $ "This is where John come in"
   let Body () bnds res = body
   putStrLn $ "The function returns this: " ++ pretty res
   putStrLn "Which is computed by these bindings: "
   mapM_ lookAtBinding bnds
-  let test = storeMemBlock body
-  mapM_ printBinding (Map.toList test)
--- storeMemBlock body should go here
--- storeMemBlock body
--- foldl mapMemBlock Map.empty bnds
+--  let test = storeMemBlock body
+--  mapM_ printBinding (Map.toList test)
   where lookAtBinding (Let pat () e) = do
           putStrLn $ "The binding with pattern: " ++ pretty pat
           putStrLn $ "And corresponding expression:\n" ++
                      unlines (map ("  "++) $ lines $ pretty e)
+          let xs = HS.toList (freeInExp e)
+          putStrLn $ "vars (exp): " ++ unlines (map (" "++) $ lines $ pretty xs)
 
 -- just a test function to see, if the map is created correct
 printBinding :: (VName, VName) -> IO ()
