@@ -5,18 +5,18 @@ module Futhark.MemoryBlockMerging
        (memoryBlockMerging)
        where
 
-import Futhark.Representation.ExplicitMemory as ExplicitMemory
+import           Futhark.Representation.ExplicitMemory as ExplicitMemory
 
 import qualified Data.Map as Map -- otherwise ambiguity
 
-import Data.Map (Map)
+import           Data.Map (Map)
 import qualified Data.Map as Map -- otherwise ambiguity
 
-import Data.Char
+import           Data.Char
 
-import Futhark.Representation.AST.Attributes.Names as Names
-import qualified Data.HashSet as HS
 import qualified Data.HashMap.Lazy as HM
+import qualified Data.HashSet as HS
+import           Futhark.Representation.AST.Attributes.Names as Names
 
 
 memoryBlockMerging :: Prog -> IO ()
@@ -70,8 +70,8 @@ lookAtFunction (FunDec fname rettype params body) = do
 printBinding :: (VName, VName) -> IO ()
 printBinding (var, block) =
   putStrLn ("var: " ++ (pretty var) ++ "\n" ++ "block: " ++ (pretty block))
-          let xs = HS.toList (freeInExp e)
-          putStrLn $ "vars (exp): " ++ unlines (map (" "++) $ lines $ pretty xs)
+  let xs = HS.toList (freeInExp e)
+      putStrLn $ "vars (exp): " ++ unlines (map (" "++) $ lines $ pretty xs)
 
 printMap :: (String, (String, String)) -> IO ()
 printMap (mem, (fu, lu)) =
