@@ -23,8 +23,3 @@ lookAtFunction (FunDec fname rettype params body) = do
           putStrLn $ "And corresponding expression:\n" ++
                      unlines (map ("  "++) $ lines $ pretty e)
 
-let Fname = [fname]
-
-fillFunction :: FunDec -> Array
-
-printFunction :: Array -> IO ()
