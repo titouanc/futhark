@@ -49,6 +49,8 @@ module Language.Futhark.Syntax
   -- * Definitions
   , FunDefBase(..)
   , TypeDefBase(..)
+  , SigDefBase(..)
+  , SigDeclBase(..)
   , ProgBase(..)
   , ProgBaseWithHeaders(..)
   , ProgHeader(..)
@@ -70,7 +72,6 @@ import Data.Monoid
 import Data.Foldable
 import Data.Traversable
 import qualified Data.HashSet as HS
-
 import Prelude
 
 import Futhark.Representation.Primitive
@@ -226,6 +227,7 @@ data UserType vn = UserPrim PrimType SrcLoc
                  | UserArray (UserType vn) (DimDecl vn) Uniqueness SrcLoc
                  | UserTuple [UserType vn] SrcLoc
                  | UserTypeAlias Name SrcLoc
+
     deriving (Show)
 
 instance Located (UserType vn) where
@@ -602,10 +604,29 @@ data TypeDefBase f vn = TypeDef { typeAlias :: Name -- Den selverklærede types 
                                 }
 deriving instance Showable f vn => Show (TypeDefBase f vn)
 
+data SigDefBase f vn = SigDef { sigDefName :: Name
+                              , sigDecl :: [SigDeclBase f vn]
+                              , sigDefLocation :: SrcLoc
+                              }
+deriving instance Showable f vn => Show (SigDefBase f vn)
+
+data SigDeclBase f vn = FunSig  { funSigName :: Name
+                                , funSigParams :: [TypeDeclBase f vn]
+                                , funSigRettype :: TypeDeclBase f vn
+                                }
+                      | TypeSig { typeSigName :: Name
+                                , typeSigType :: TypeDeclBase f vn
+                                }
+                      | ValSig  { valSigName :: Name
+                                , valType :: TypeDeclBase f vn
+                                }
+deriving instance Showable f vn => Show (SigDeclBase f vn)
+
+
 
 data DecBase f vn = FunDec (FunDefBase f vn)
                   | TypeDec (TypeDefBase f vn)
--- | Coming soon  | SigDec ..
+                  | SigDec (SigDefBase f vn)
 --                | ModDec ..
 deriving instance Showable f vn => Show (DecBase f vn)
 

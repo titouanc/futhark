@@ -71,6 +71,8 @@ tokens :-
   "_"                      { tokenC UNDERSCORE }
   "!"                      { tokenC BANG }
   "."                      { tokenC DOT }
+  "->"                     { tokenC TO }
+  ":"                      { tokenC IS }
   @intlit i8               { tokenM $ fmap I8LIT . tryRead "i8" . T.takeWhile (/='i') }
   @intlit i16              { tokenM $ fmap I16LIT . tryRead "i16" . T.takeWhile (/='i') }
   @intlit i32              { tokenM $ fmap I32LIT . tryRead "i32" . T.takeWhile (/='i') }
@@ -152,6 +154,11 @@ keyword s =
     "include"      -> INCLUDE
     "type"         -> TYPE
     "entry"        -> ENTRY
+    "signature"    -> SIGNATURE
+    "sig"          -> SIG
+    "end"          -> END
+    "val"          -> VAL
+
     _              -> ID $ nameFromText s
 
 tryRead :: Read a => String -> T.Text -> Alex a
@@ -295,6 +302,13 @@ data Token = IF
            | ENTRY
            | TYPE
            | EOF
+           | SIGNATURE
+           | SIG
+           | END
+           | VAL
+           | IS
+           | TO
+
              deriving (Show, Eq)
 
 -- The Alex wrapper only works on ByteStrings, so we have to encode

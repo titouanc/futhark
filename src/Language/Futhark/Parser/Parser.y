@@ -127,6 +127,8 @@ import Language.Futhark.Parser.Lexer
       fn              { L $$ FN }
       '=>'            { L $$ ARROW }
       '<-'            { L $$ SETTO }
+      '->'            { L $$ TO }
+      ':'             { L $$ IS }
       for             { L $$ FOR }
       do              { L $$ DO }
       with            { L $$ WITH }
@@ -165,7 +167,11 @@ import Language.Futhark.Parser.Lexer
       streamSeq       { L $$ STREAM_SEQ }
       include         { L $$ INCLUDE }
       write           { L $$ WRITE }
-      type            { L $$ TYPE}
+      type            { L $$ TYPE }
+      signature       { L $$ SIGNATURE }
+      sig             { L $$ SIG }
+      end             { L $$ END }
+      val             { L $$ VAL }
 
 %nonassoc ifprec letprec
 %left '||'
@@ -201,8 +207,35 @@ Decs :: { [DecBase f vn] }
 Dec :: { DecBase f vn }
        : Fun { FunDec $1 }
        | UserTypeAlias { TypeDec $1 }
+       | Signature { SigDec $1 }
 ;
 
+Signature :: { SigDefBase f vn }
+          : signature id sig SigDecs end
+              { let L pos (ID name) = $2
+                 in SigDef name $4 pos }
+
+SigDecs : SigDec SigDecs { $1 : $2 }
+        | SigDec { [$1] }
+
+SigDec : FunSig { $1 }
+       | TypeSig { $1 }
+       | ValSig { $1 }
+
+FunSig : fun id ':' FunSigArgs '->' UserTypeDecl
+           { let L _ (ID name) = $2
+              in FunSig name $4 $6 }
+
+FunSigArgs : UserTypeDecl          { [$1] }
+           | '(' UserTypeDecls ')' {  $2  }
+
+TypeSig : type id ':' UserTypeDecl
+            { let L _ (ID name) = $2
+               in TypeSig name $4 }
+
+ValSig : val id ':' UserTypeDecl
+           { let L _ (ID name) = $2
+              in ValSig name $4 }
 
 DefaultDec :: { () }
            :  default '(' SignedType ')' {% defaultIntType (fst $3)  }
@@ -277,6 +310,9 @@ Uniqueness : '*' { Unique }
 
 UserTypeDecl :: { TypeDeclBase NoInfo Name }
               : UserType { TypeDecl $1 NoInfo }
+
+UserTypeDecls : UserTypeDecl ',' UserTypeDecls { $1 : $3 }
+              | UserTypeDecl { [$1] }
 
 UserTypeAlias :: { TypeDefBase NoInfo Name }
 UserTypeAlias  : type id '=' UserType { let L loc (ID name) = $2
