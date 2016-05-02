@@ -16,7 +16,7 @@ import qualified Data.Map as Map -- otherwise ambiguity
 -- importing hashsets
 import qualified Data.HashSet as HS
 
--- importing hashmaps because freeInExp returns a hashmap
+-- importing hashmaps because freeInExp returns a hashmap (Names is a hashmap)
 import qualified Data.HashMap.Lazy as HM
 
 
