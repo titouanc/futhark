@@ -44,6 +44,7 @@ import Futhark.Pass.ExtractKernels
 import Futhark.Pass.ExpandAllocations
 import Futhark.Pass.ExplicitAllocations
 import Futhark.Pass.CoalesceMemoryAccesses
+import Futhark.Pass.MemoryBlockMerging -- we fit in here
 
 import Futhark.Passes (standardPipeline)
 
@@ -243,6 +244,7 @@ commandLineOptions =
   , explicitMemoryPassOption doubleBuffer []
   , explicitMemoryPassOption expandAllocations []
   , explicitMemoryPassOption coalesceMemoryAccesses []
+  , explicitMemoryPassOption memoryBlockMerging []
 
   , cseOption []
   , simplifyOption "e"

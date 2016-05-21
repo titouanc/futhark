@@ -135,6 +135,7 @@ Library
                    Futhark.Pass.ExtractKernels.SegmentedReduce
                    Futhark.Pass.FirstOrderTransform
                    Futhark.Pass.KernelBabysitting
+                   Futhark.Pass.MemoryBlockMerging
                    Futhark.Pass.Simplify
                    Futhark.Pipeline
                    Futhark.Representation.Aliases
