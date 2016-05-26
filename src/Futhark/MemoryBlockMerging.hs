@@ -40,8 +40,8 @@ getAll (MemInfo mem var sz) =
 memoryBlockMerging :: Prog -> IO ()
 memoryBlockMerging = mapM_ lookAtFunction . progFunctions
 
-lookAtFunction :: FunDec -> IO ()
-lookAtFunction (FunDec fname rettype params body) = do
+lookAtFunction :: FunDef -> IO ()
+lookAtFunction (FunDef entry fname rettype params body) = do
 {-
   putStrLn $ "This is the function of name: " ++ nameToString fname
   putStrLn $ "  and return type: " ++ pretty rettype

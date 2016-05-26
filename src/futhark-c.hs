@@ -19,6 +19,7 @@ import Futhark.Optimise.InPlaceLowering
 import Futhark.Optimise.CSE
 import Futhark.Pass.FirstOrderTransform
 import Futhark.Pass.Simplify
+import Futhark.Pass.MemoryBlockMerging
 import Futhark.Util.Options
 import Futhark.Optimise.DoubleBuffer
 
@@ -94,4 +95,5 @@ compilerPipeline =
          , simplifyExplicitMemory
          , doubleBuffer
          , simplifyExplicitMemory
+         , memoryBlockMerging
          ]

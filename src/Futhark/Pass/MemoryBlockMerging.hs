@@ -22,10 +22,10 @@ memoryBlockMerging =
   "Memoryblock merging" $
   intraproceduralTransformation transformFunDec
 
-transformFunDec :: MonadFreshNames m => FunDec -> m FunDec
-transformFunDec fundec =
-  let body' = transformBody $ funDecBody fundec in
-  return fundec { funDecBody = body' }
+transformFunDec :: MonadFreshNames m => FunDef -> m FunDef
+transformFunDec fundef =
+  let body' = transformBody $ funDefBody fundef in
+  return fundef { funDefBody = body' }
 
 transformBody :: Body -> Body
 transformBody (Body att bnds res) =
