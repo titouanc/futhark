@@ -7,6 +7,7 @@ import System.FilePath
 import System.Process
 import System.Exit
 import System.Console.GetOpt
+import qualified System.Info
 
 import Futhark.Pipeline
 import Futhark.Passes
@@ -46,9 +47,15 @@ openclCodeAction filepath config =
           let binpath = outputFilePath filepath config
               cpath = binpath `replaceExtension` "c"
           liftIO $ writeFile cpath cprog
+          let args
+                | System.Info.os == "darwin" =
+                    [cpath, "-o", binpath, "-lm", "-O3", "-std=c99", "-framework", "OpenCL"]
+                | System.Info.os == "mingw32" =
+                    [cpath, "-o", binpath, "-lm", "-O3", "-std=c99", "-lOpenCL64"]
+                | otherwise =
+                    [cpath, "-o", binpath, "-lm", "-O3", "-std=c99", "-lOpenCL"]
           (gccCode, _, gccerr) <-
-            liftIO $ readProcessWithExitCode "gcc"
-            [cpath, "-o", binpath, "-lm", "-O3", "-std=c99", "-lOpenCL"] ""
+            liftIO $ readProcessWithExitCode "gcc" args ""
           case gccCode of
             ExitFailure code -> compileFail $ "gcc failed with code " ++ show code ++ ":\n" ++ gccerr
             ExitSuccess      -> return ()
@@ -91,11 +98,13 @@ compilerPipeline =
   passes [ simplifyKernels
          , babysitKernels
          , simplifyKernels
+         , performCSE True
+         , simplifyKernels
          , inPlaceLowering
          ] >>>
   onePass explicitAllocations >>>
   passes [ simplifyExplicitMemory
-         , performCSE
+         , performCSE False
          , simplifyExplicitMemory
          , doubleBuffer
          , simplifyExplicitMemory

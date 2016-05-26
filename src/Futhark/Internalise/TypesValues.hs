@@ -72,7 +72,7 @@ internaliseDeclType' ddi (E.Array at) =
                         else I.uniqueness ct
                  | ct <- ts ]
 
-        internaliseTupleArrayElem (PrimArrayElem bt _) =
+        internaliseTupleArrayElem (PrimArrayElem bt _ _) =
           return [I.Prim $ internalisePrimType bt]
         internaliseTupleArrayElem (ArrayArrayElem aet) =
           internaliseArrayType aet
@@ -100,7 +100,7 @@ internaliseDeclType' ddi (E.Array at) =
           Ext <$> knownOrNewId name
         internaliseDim AssertDims (NamedDim name) = do
           subst <- asks $ HM.lookup name . envSubsts
-          I.Free <$> I.Var <$> case subst of
+          I.Free . I.Var <$> case subst of
             Just [v] -> return v
             _        -> fail $ "Shape declaration " ++ pretty name ++ " not found"
 
@@ -135,7 +135,7 @@ internaliseTypeWithUniqueness = flip evalState 0 . internaliseType'
                          else I.uniqueness t
                  | t <- ts ]
 
-        internaliseTupleArrayElem (PrimArrayElem bt _) =
+        internaliseTupleArrayElem (PrimArrayElem bt _ _) =
           return [I.Prim $ internalisePrimType bt]
         internaliseTupleArrayElem (ArrayArrayElem at) =
           internaliseArrayType at
@@ -175,14 +175,14 @@ internaliseValue (E.ArrayValue arr rt) = do
   zipWithM asarray ts arrayvalues'
   where asarray rt' values =
           let shape = determineShape (I.arrayRank rt') values
-              values' = concatMap flatten values
+              values' = concatMap flat values
               size = product shape
           in if size == length values' then
                Just $ I.ArrayVal (A.listArray (0,size - 1) values')
                (I.elemType rt') shape
              else Nothing
-        flatten (I.PrimVal bv)      = [bv]
-        flatten (I.ArrayVal bvs _ _) = A.elems bvs
+        flat (I.PrimVal bv)      = [bv]
+        flat (I.ArrayVal bvs _ _) = A.elems bvs
 
 internaliseValue (E.TupValue vs) =
   concat <$> mapM internaliseValue vs
@@ -201,7 +201,6 @@ internalisePrimType (E.Signed t) = I.IntType t
 internalisePrimType (E.Unsigned t) = I.IntType t
 internalisePrimType (E.FloatType t) = I.FloatType t
 internalisePrimType E.Bool = I.Bool
-internalisePrimType E.Char = I.Char
 
 -- | Convert an external primitive value to an internal primitive value.
 internalisePrimValue :: E.PrimValue -> I.PrimValue
@@ -209,4 +208,3 @@ internalisePrimValue (E.SignedValue v) = I.IntValue v
 internalisePrimValue (E.UnsignedValue v) = I.IntValue v
 internalisePrimValue (E.FloatValue v) = I.FloatValue v
 internalisePrimValue (E.BoolValue b) = I.BoolValue b
-internalisePrimValue (E.CharValue c) = I.CharValue c

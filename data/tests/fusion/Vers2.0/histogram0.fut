@@ -1,11 +1,11 @@
 -- ==
 -- input {
---   {3, 300}
+--   (3, 300)
 -- }
 -- output {
 --   [100.0,100.0,100.0]
 -- }
--- structure {
+-- structure distributed {
 --   Iota 0
 -- }
 fun *[f64,n_histo] main(int n_histo, int n_image) =

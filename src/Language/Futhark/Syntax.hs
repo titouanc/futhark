@@ -1,4 +1,5 @@
-{-# LANGUAGE FlexibleInstances, FlexibleContexts #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances, FlexibleContexts, StandaloneDeriving #-}
 -- | This Is an ever-changing abstract syntax for Futhark.  Some types,
 -- such as @Exp@, are parametrised by type and name representation.
 -- See the @docs/@ subdirectory in the Futhark repository for a language
@@ -17,13 +18,15 @@ module Language.Futhark.Syntax
   , ShapeDecl (..)
   , Rank (..)
   , TypeBase(..)
+  , UserType(..)
   , TupleArrayElemTypeBase(..)
   , ArrayTypeBase(..)
   , CompTypeBase
-  , DeclTypeBase
+  , StructTypeBase
   , DeclArrayTypeBase
   , DeclTupleArrayElemTypeBase
   , Diet(..)
+  , TypeDeclBase (..)
 
     -- * Values
   , IntValue(..)
@@ -34,8 +37,8 @@ module Language.Futhark.Syntax
   -- * Abstract syntax tree
   , UnOp (..)
   , BinOp (..)
-  , IdentBase(..)
-  , ParamBase
+  , IdentBase (..)
+  , ParamBase (..)
   , ExpBase(..)
   , LoopFormBase (..)
   , ForLoopDirection (..)
@@ -44,21 +47,28 @@ module Language.Futhark.Syntax
   , StreamForm(..)
 
   -- * Definitions
-  , FunDecBase
+  , FunDefBase(..)
+  , TypeDefBase(..)
   , ProgBase(..)
   , ProgBaseWithHeaders(..)
   , ProgHeader(..)
+  , DecBase(..)
 
   -- * Miscellaneous
   , NoInfo(..)
+  , Info(..)
   , Names
   )
   where
 
+import Control.Applicative
 import Data.Array
 import Data.Hashable
 import Data.Loc
+import Data.Functor
 import Data.Monoid
+import Data.Foldable
+import Data.Traversable
 import qualified Data.HashSet as HS
 
 import Prelude
@@ -67,21 +77,45 @@ import Futhark.Representation.Primitive
   (IntType(..), FloatType(..), IntValue(..), FloatValue(..))
 import Language.Futhark.Core
 
+-- | Convenience class for deriving Show instances for the AST.
+class (Show vn,
+       Show (f vn),
+       Show (f (CompTypeBase vn)),
+       Show (f (StructTypeBase vn))) => Showable f vn where
+
 -- | No information.  Usually used for placeholder type- or aliasing
 -- information.
-data NoInfo vn = NoInfo
-                 deriving (Eq, Ord, Show)
+data NoInfo a = NoInfo
+              deriving (Eq, Ord, Show)
 
-instance Monoid (NoInfo vn) where
+instance Show vn => Showable NoInfo vn where
+instance Functor NoInfo where
+  fmap _ NoInfo = NoInfo
+instance Foldable NoInfo where
+  foldr _ b NoInfo = b
+instance Traversable NoInfo where
+  traverse _ NoInfo = pure NoInfo
+instance Monoid (NoInfo a) where
   mempty = NoInfo
   _ `mappend` _ = NoInfo
+
+-- | Some information.  The dual to 'NoInfo'
+newtype Info a = Info { unInfo :: a }
+            deriving (Eq, Ord, Show)
+
+instance Show vn => Showable Info vn where
+instance Functor Info where
+  fmap f (Info x) = Info $ f x
+instance Foldable Info where
+  foldr f b (Info x) = f x b
+instance Traversable Info where
+  traverse f (Info x) = Info <$> f x
 
 -- | Low-level primitive types.
 data PrimType = Signed IntType
               | Unsigned IntType
               | FloatType FloatType
               | Bool
-              | Char
               deriving (Eq, Ord, Show)
 
 -- | Non-array values.
@@ -89,7 +123,6 @@ data PrimValue = SignedValue !IntValue
                | UnsignedValue !IntValue
                | FloatValue !FloatValue
                | BoolValue !Bool
-               | CharValue !Char
                deriving (Eq, Ord, Show)
 
 -- | The class of types that can represent an array size.  The
@@ -145,29 +178,17 @@ instance (Eq vn, Ord vn) => ArrayShape (ShapeDecl vn) where
 
 -- | Types that can be elements of tuple-arrays.
 data TupleArrayElemTypeBase shape as vn =
-    PrimArrayElem PrimType (as vn)
+    PrimArrayElem PrimType (as vn) Uniqueness
   | ArrayArrayElem (ArrayTypeBase shape as vn)
   | TupleArrayElem [TupleArrayElemTypeBase shape as vn]
   deriving (Show)
 
 instance Eq (shape vn) =>
          Eq (TupleArrayElemTypeBase shape as vn) where
-  PrimArrayElem bt1 _ == PrimArrayElem bt2 _ = bt1 == bt2
-  ArrayArrayElem at1   == ArrayArrayElem at2   = at1 == at2
-  TupleArrayElem ts1   == TupleArrayElem ts2   = ts1 == ts2
-  _                    == _                    = False
-
-instance Ord (shape vn) =>
-         Ord (TupleArrayElemTypeBase shape as vn) where
-  PrimArrayElem bt1 _ `compare` PrimArrayElem bt2 _ = bt1 `compare` bt2
-  ArrayArrayElem at1   `compare` ArrayArrayElem at2   = at1 `compare` at2
-  TupleArrayElem ts1   `compare` TupleArrayElem ts2   = ts1 `compare` ts2
-  PrimArrayElem {}    `compare` ArrayArrayElem {}    = LT
-  PrimArrayElem {}    `compare` TupleArrayElem {}    = LT
-  ArrayArrayElem {}    `compare` TupleArrayElem {}    = LT
-  ArrayArrayElem {}    `compare` PrimArrayElem {}    = GT
-  TupleArrayElem {}    `compare` PrimArrayElem {}    = GT
-  TupleArrayElem {}    `compare` ArrayArrayElem {}    = GT
+  PrimArrayElem bt1 _ u1 == PrimArrayElem bt2 _ u2 = bt1 == bt2 && u1 == u2
+  ArrayArrayElem at1     == ArrayArrayElem at2     = at1 == at2
+  TupleArrayElem ts1     == TupleArrayElem ts2     = ts1 == ts2
+  _                      == _                      = False
 
 -- | An array type.
 data ArrayTypeBase shape as vn =
@@ -186,44 +207,41 @@ instance Eq (shape vn) =>
   _ == _ =
     False
 
-instance Ord (shape vn) =>
-         Ord (ArrayTypeBase shape as vn) where
-  PrimArray et1 dims1 u1 _ <= PrimArray et2 dims2 u2 _
-    | et1 < et2     = True
-    | et1 > et2     = False
-    | dims1 < dims2 = True
-    | dims1 > dims2 = False
-    | u1 < u2       = True
-    | u1 > u2       = False
-    | otherwise     = True
-  TupleArray ts1 dims1 u1 <= TupleArray ts2 dims2 u2
-    | ts1 < ts2     = True
-    | ts1 > ts2     = False
-    | dims1 < dims2 = True
-    | dims1 > dims2 = False
-    | u1 < u2       = True
-    | u1 > u2       = False
-    | otherwise     = True
-  PrimArray {} <= TupleArray {} =
-    True
-  TupleArray {} <= PrimArray {} =
-    False
-
 -- | An Futhark type is either an array, a prim type, or a tuple.
 -- When comparing types for equality with '==', aliases are ignored,
 -- but dimensions much match.
 data TypeBase shape as vn = Prim PrimType
                           | Array (ArrayTypeBase shape as vn)
                           | Tuple [TypeBase shape as vn]
-                          deriving (Eq, Ord, Show)
+                          deriving (Eq, Show)
+
 
 -- | A type with aliasing information and no shape annotations, used
 -- for describing the type of a computation.
 type CompTypeBase = TypeBase Rank Names
 
--- | A type with shape annotations and no aliasing information, used
--- for declarations.
-type DeclTypeBase = TypeBase ShapeDecl NoInfo
+-- | An unstructured type with type variables and possibly shape
+-- declarations - this is what the user types in the source program.
+data UserType vn = UserPrim PrimType SrcLoc
+                 | UserArray (UserType vn) (DimDecl vn) SrcLoc
+                 | UserTuple [UserType vn] SrcLoc
+                 | UserTypeAlias Name SrcLoc
+                 | UserUnique (UserType vn) SrcLoc
+    deriving (Show)
+
+instance Located (UserType vn) where
+  locOf (UserPrim _ loc) = locOf loc
+  locOf (UserArray _ _ loc) = locOf loc
+  locOf (UserTuple _ loc) = locOf loc
+  locOf (UserTypeAlias _ loc) = locOf loc
+  locOf (UserUnique _ loc) = locOf loc
+
+--
+-- | A "structural" type with shape annotations and no aliasing
+-- information, used for declarations.
+
+type StructTypeBase = TypeBase ShapeDecl NoInfo
+
 
 -- | An array type with shape annotations and no aliasing information,
 -- used for declarations.
@@ -232,6 +250,15 @@ type DeclArrayTypeBase = ArrayTypeBase ShapeDecl NoInfo
 -- | A tuple array element type with shape annotations and no aliasing
 -- information, used for declarations.
 type DeclTupleArrayElemTypeBase = TupleArrayElemTypeBase ShapeDecl NoInfo
+
+-- | A declaration of the type of something.
+data TypeDeclBase f vn =
+  TypeDecl { declaredType :: UserType vn
+                             -- ^ The type declared by the user.
+           , expandedType :: f (StructTypeBase vn)
+                             -- ^ The type deduced by the type checker.
+           }
+deriving instance Showable f vn => Show (TypeDeclBase f vn)
 
 -- | Information about which parts of a value/type are consumed.  For
 -- example, we might say that a function taking an argument of type
@@ -250,31 +277,42 @@ data Value = PrimValue !PrimValue
            | ArrayValue !(Array Int Value) (TypeBase Rank NoInfo ())
              -- ^ It is assumed that the array is 0-indexed.  The type
              -- is the row type.
-             deriving (Eq, Ord, Show)
+             deriving (Eq, Show)
 
 -- | An identifier consists of its name and the type of the value
 -- bound to the identifier.
-data IdentBase ty vn = Ident { identName :: vn
-                             , identType :: ty vn
-                             , identSrcLoc :: SrcLoc
-                             }
-                deriving (Show)
-
--- | A name with no aliasing information, but known type.  These are
--- used for function parameters.
-type ParamBase = IdentBase DeclTypeBase
+data IdentBase f vn = Ident { identName :: vn
+                            , identType :: f (CompTypeBase vn)
+                            , identSrcLoc :: SrcLoc
+                            }
+deriving instance Showable f vn => Show (IdentBase f vn)
 
 instance Eq vn => Eq (IdentBase ty vn) where
   x == y = identName x == identName y
-
-instance Ord vn => Ord (IdentBase ty vn) where
-  x `compare` y = identName x `compare` identName y
 
 instance Located (IdentBase ty vn) where
   locOf = locOf . identSrcLoc
 
 instance Hashable vn => Hashable (IdentBase ty vn) where
   hashWithSalt salt = hashWithSalt salt . identName
+
+
+-- | A name with no aliasing information, but known type.  These are
+-- used for function parameters.
+data ParamBase f vn = Param { paramName :: vn
+                            , paramTypeDecl :: TypeDeclBase f vn
+                            , paramSrcLoc :: SrcLoc
+                          }
+deriving instance Showable f vn => Show (ParamBase f vn)
+
+instance Eq vn => Eq (ParamBase f vn) where
+  x == y = paramName x == paramName y
+
+instance Located (ParamBase f vn) where
+  locOf = locOf . paramSrcLoc
+
+instance Hashable vn => Hashable (ParamBase f vn) where
+  hashWithSalt salt = hashWithSalt salt . paramName
 
 -- | Unary operators.
 data UnOp = Not
@@ -323,73 +361,75 @@ data BinOp = Plus -- Binary Ops for Numbers
 -- the parser will produce expressions of type @Exp 'NoInfo'@, and the
 -- type checker will convert these to @Exp 'Type'@, in which type
 -- information is always present.
-data ExpBase ty vn =
+data ExpBase f vn =
               Literal Value SrcLoc
 
-            | TupLit    [ExpBase ty vn] SrcLoc
+            | TupLit    [ExpBase f vn] SrcLoc
             -- ^ Tuple literals, e.g., @{1+3, {x, y+z}}@.
 
-            | ArrayLit  [ExpBase ty vn] (ty vn) SrcLoc
+            | ArrayLit  [ExpBase f vn] (f (CompTypeBase vn)) SrcLoc
 
-            | Var    (IdentBase ty vn)
+            | Empty (TypeDeclBase f vn) SrcLoc
+
+            | Var    (IdentBase f vn)
             -- ^ Array literals, e.g., @[ [1+x, 3], [2, 1+4] ]@.
             -- Second arg is the type of of the rows of the array (not
             -- the element type).
-            | LetPat (PatternBase ty vn) (ExpBase ty vn) (ExpBase ty vn) SrcLoc
+            | LetPat (PatternBase f vn) (ExpBase f vn) (ExpBase f vn) SrcLoc
 
-            | If     (ExpBase ty vn) (ExpBase ty vn) (ExpBase ty vn) (ty vn) SrcLoc
+            | If     (ExpBase f vn) (ExpBase f vn) (ExpBase f vn) (f (CompTypeBase vn)) SrcLoc
 
-            | Apply  Name [(ExpBase ty vn, Diet)] (ty vn) SrcLoc
+            | Apply  Name [(ExpBase f vn, Diet)] (f (CompTypeBase vn)) SrcLoc
 
             | DoLoop
-              (PatternBase ty vn) -- Merge variable pattern
-              (ExpBase ty vn) -- Initial values of merge variables.
-              (LoopFormBase ty vn) -- Do or while loop.
-              (ExpBase ty vn) -- Loop body.
-              (ExpBase ty vn) -- Let-body.
+              (PatternBase f vn) -- Merge variable pattern
+              (ExpBase f vn) -- Initial values of merge variables.
+              (LoopFormBase f vn) -- Do or while loop.
+              (ExpBase f vn) -- Loop body.
+              (ExpBase f vn) -- Let-body.
               SrcLoc
 
-            | BinOp BinOp (ExpBase ty vn) (ExpBase ty vn) (ty vn) SrcLoc
-            | UnOp UnOp (ExpBase ty vn) SrcLoc
+            | BinOp BinOp (ExpBase f vn) (ExpBase f vn) (f (CompTypeBase vn)) SrcLoc
+            | UnOp UnOp (ExpBase f vn) SrcLoc
 
             -- Primitive array operations
-            | LetWith (IdentBase ty vn) (IdentBase ty vn)
-                      [ExpBase ty vn] (ExpBase ty vn)
-                      (ExpBase ty vn) SrcLoc
+            | LetWith (IdentBase f vn) (IdentBase f vn)
+                      [ExpBase f vn] (ExpBase f vn)
+                      (ExpBase f vn) SrcLoc
 
-            | Index (ExpBase ty vn)
-                    [ExpBase ty vn]
+            | Index (ExpBase f vn)
+                    [ExpBase f vn]
                     SrcLoc
 
-            | Size Int (ExpBase ty vn) SrcLoc
+            | Size Int (ExpBase f vn) SrcLoc
             -- ^ The size of the specified array dimension.
 
-            | Split [ExpBase ty vn] (ExpBase ty vn) SrcLoc
+            | Split [ExpBase f vn] (ExpBase f vn) SrcLoc
             -- ^ @split( (1,1,3), [ 1, 2, 3, 4 ]) = {[1], [], [2, 3], [4]}@.
             -- Note that this is different from the internal representation
 
-            | Concat (ExpBase ty vn) [ExpBase ty vn] SrcLoc
+            | Concat (ExpBase f vn) [ExpBase f vn] SrcLoc
             -- ^ @concat([1],[2, 3, 4]) = [1, 2, 3, 4]@.
 
-            | Copy (ExpBase ty vn) SrcLoc
+            | Copy (ExpBase f vn) SrcLoc
             -- ^ Copy the value return by the expression.  This only
             -- makes a difference in do-loops with merge variables.
 
             -- Array construction.
-            | Iota (ExpBase ty vn) SrcLoc
+            | Iota (ExpBase f vn) SrcLoc
             -- ^ @iota(n) = [0,1,..,n-1]@
-            | Replicate (ExpBase ty vn) (ExpBase ty vn) SrcLoc
+            | Replicate (ExpBase f vn) (ExpBase f vn) SrcLoc
             -- ^ @replicate(3,1) = [1, 1, 1]@
 
             -- Array index space transformation.
-            | Reshape [ExpBase ty vn] (ExpBase ty vn) SrcLoc
+            | Reshape [ExpBase f vn] (ExpBase f vn) SrcLoc
              -- ^ 1st arg is the new shape, 2nd arg is the input array.
 
-            | Transpose (ExpBase ty vn) SrcLoc
+            | Transpose (ExpBase f vn) SrcLoc
             -- ^ Transpose two-dimensional array.  @transpose(a) =
             -- rearrange((1,0), a)@.
 
-            | Rearrange [Int] (ExpBase ty vn) SrcLoc
+            | Rearrange [Int] (ExpBase f vn) SrcLoc
             -- ^ Permute the dimensions of the input array.  The list
             -- of integers is a list of dimensions (0-indexed), which
             -- must be a permutation of @[0,n-1]@, where @n@ is the
@@ -397,27 +437,27 @@ data ExpBase ty vn =
 
             -- Second-Order Array Combinators accept curried and
             -- anonymous functions as first params.
-            | Map (LambdaBase ty vn) (ExpBase ty vn) SrcLoc
+            | Map (LambdaBase f vn) (ExpBase f vn) SrcLoc
              -- ^ @map(op +(1), [1,2,..,n]) = [2,3,..,n+1]@.
 
-            | Reduce Commutativity (LambdaBase ty vn) (ExpBase ty vn) (ExpBase ty vn) SrcLoc
+            | Reduce Commutativity (LambdaBase f vn) (ExpBase f vn) (ExpBase f vn) SrcLoc
              -- ^ @reduce(op +, 0, [1,2,...,n]) = (0+1+2+...+n)@.
 
-            | Scan (LambdaBase ty vn) (ExpBase ty vn) (ExpBase ty vn) SrcLoc
+            | Scan (LambdaBase f vn) (ExpBase f vn) (ExpBase f vn) SrcLoc
              -- ^ @scan(plus, 0, [ 1, 2, 3 ]) = [ 1, 3, 6 ]@.
 
-            | Filter (LambdaBase ty vn) (ExpBase ty vn) SrcLoc
+            | Filter (LambdaBase f vn) (ExpBase f vn) SrcLoc
             -- ^ Return those elements of the array that satisfy the
             -- predicate.
 
-            | Partition [LambdaBase ty vn] (ExpBase ty vn) SrcLoc
+            | Partition [LambdaBase f vn] (ExpBase f vn) SrcLoc
             -- ^ @partition(f_1, ..., f_n, a)@ returns @n+1@ arrays, with
             -- the @i@th array consisting of those elements for which
             -- function @f_1@ returns 'True', and no previous function
             -- has returned 'True'.  The @n+1@th array contains those
             -- elements for which no function returns 'True'.
 
-            | Stream (StreamForm ty vn) (LambdaBase ty vn) (ExpBase ty vn) SrcLoc
+            | Stream (StreamForm f vn) (LambdaBase f vn) (ExpBase f vn) SrcLoc
             -- ^ Streaming: intuitively, this gives a size-parameterized
             -- composition for SOACs that cannot be fused, e.g., due to scan.
             -- For example, assuming @A : [int], f : int->int, g : real->real@,
@@ -443,31 +483,34 @@ data ExpBase ty vn =
             -- may choose the maximal chunk size that still satisfies the memory
             -- requirements of the device.
 
-            | Zip [(ExpBase ty vn, ty vn)] SrcLoc
+            | Write (ExpBase f vn) (ExpBase f vn) (ExpBase f vn) SrcLoc
+            -- ^ @write([0, 2, -1], [9, 7, 0], [3, 4, 5]) = [9, 4, 7]@.
+
+            | Zip [(ExpBase f vn, f (CompTypeBase vn))] SrcLoc
             -- ^ Normal zip supporting variable number of arguments.
             -- The type paired to each expression is the full type of
             -- the array returned by that expression.
 
-            | Unzip (ExpBase ty vn) [ty vn] SrcLoc
+            | Unzip (ExpBase f vn) [f (CompTypeBase vn)] SrcLoc
             -- ^ Unzip that can unzip to tuples of arbitrary size.
             -- The types are the elements of the tuple.
 
-            | Unsafe (ExpBase ty vn) SrcLoc
+            | Unsafe (ExpBase f vn) SrcLoc
             -- ^ Explore the Danger Zone and elide safety checks on
             -- array operations that are (lexically) within this
             -- expression.  Make really sure the code is correct.
+deriving instance Showable f vn => Show (ExpBase f vn)
 
-              deriving (Eq, Ord, Show)
+data StreamForm f vn = MapLike    StreamOrd
+                     | RedLike    StreamOrd Commutativity (LambdaBase f vn) (ExpBase f vn)
+                     | Sequential (ExpBase f vn)
+deriving instance Showable f vn => Show (StreamForm f vn)
 
-data StreamForm ty vn = MapLike    StreamOrd
-                      | RedLike    StreamOrd Commutativity (LambdaBase ty vn) (ExpBase ty vn)
-                      | Sequential (ExpBase ty vn)
-                        deriving (Eq, Ord, Show)
-
-instance Located (ExpBase ty vn) where
+instance Located (ExpBase f vn) where
   locOf (Literal _ loc) = locOf loc
   locOf (TupLit _ pos) = locOf pos
   locOf (ArrayLit _ _ pos) = locOf pos
+  locOf (Empty _ pos) = locOf pos
   locOf (BinOp _ _ _ _ pos) = locOf pos
   locOf (UnOp _ _ pos) = locOf pos
   locOf (If _ _ _ _ pos) = locOf pos
@@ -495,11 +538,12 @@ instance Located (ExpBase ty vn) where
   locOf (DoLoop _ _ _ _ _ pos) = locOf pos
   locOf (Stream _ _ _  pos) = locOf pos
   locOf (Unsafe _ loc) = locOf loc
+  locOf (Write _ _ _ loc) = locOf loc
 
 -- | Whether the loop is a @for@-loop or a @while@-loop.
-data LoopFormBase ty vn = For ForLoopDirection (ExpBase ty vn) (IdentBase ty vn) (ExpBase ty vn)
-                        | While (ExpBase ty vn)
-                          deriving (Eq, Ord, Show)
+data LoopFormBase f vn = For ForLoopDirection (ExpBase f vn) (IdentBase f vn) (ExpBase f vn)
+                       | While (ExpBase f vn)
+deriving instance Showable f vn => Show (LoopFormBase f vn)
 
 -- | The iteration order of a @for@-loop.
 data ForLoopDirection = FromUpTo -- ^ Iterates from the lower bound to
@@ -509,21 +553,21 @@ data ForLoopDirection = FromUpTo -- ^ Iterates from the lower bound to
                         deriving (Eq, Ord, Show)
 
 -- | Anonymous Function
-data LambdaBase ty vn = AnonymFun [ParamBase vn] (ExpBase ty vn) (DeclTypeBase vn) SrcLoc
+data LambdaBase f vn = AnonymFun [ParamBase f vn] (ExpBase f vn) (TypeDeclBase f vn) SrcLoc
                       -- ^ @fn int (bool x, char z) => if(x) then ord(z) else ord(z)+1 *)@
-                      | CurryFun Name [ExpBase ty vn] (ty vn) SrcLoc
+                      | CurryFun Name [ExpBase f vn] (f (CompTypeBase vn)) SrcLoc
                         -- ^ @f(4)@
-                      | UnOpFun UnOp (ty vn) (ty vn) SrcLoc
+                      | UnOpFun UnOp (f (CompTypeBase vn)) (f (CompTypeBase vn)) SrcLoc
                         -- ^ @-@; first type is operand, second is result.
-                      | BinOpFun BinOp (ty vn) (ty vn) (ty vn) SrcLoc
+                      | BinOpFun BinOp (f (CompTypeBase vn)) (f (CompTypeBase vn)) (f (CompTypeBase vn)) SrcLoc
                         -- ^ @+@; first two types are operands, third is result.
-                      | CurryBinOpLeft BinOp (ExpBase ty vn) (ty vn) (ty vn) SrcLoc
+                      | CurryBinOpLeft BinOp (ExpBase f vn) (f (CompTypeBase vn)) (f (CompTypeBase vn)) SrcLoc
                         -- ^ @2+@; first type is operand, second is result.
-                      | CurryBinOpRight BinOp (ExpBase ty vn) (ty vn) (ty vn) SrcLoc
+                      | CurryBinOpRight BinOp (ExpBase f vn) (f (CompTypeBase vn)) (f (CompTypeBase vn)) SrcLoc
                         -- ^ @+2@; first type is operand, second is result.
-                        deriving (Eq, Ord, Show)
+deriving instance Showable f vn => Show (LambdaBase f vn)
 
-instance Located (LambdaBase ty vn) where
+instance Located (LambdaBase f vn) where
   locOf (AnonymFun _ _ _ loc)         = locOf loc
   locOf (CurryFun  _ _ _ loc)         = locOf loc
   locOf (UnOpFun _ _ _ loc)           = locOf loc
@@ -532,35 +576,56 @@ instance Located (LambdaBase ty vn) where
   locOf (CurryBinOpRight _ _ _ _ loc) = locOf loc
 
 -- | Tuple IdentBaseifier, i.e., pattern matching
-data PatternBase ty vn = TuplePattern [PatternBase ty vn] SrcLoc
-                       | Id (IdentBase ty vn)
-                       | Wildcard (ty vn) SrcLoc -- Nothing, i.e. underscore.
-                       deriving (Eq, Ord, Show)
+data PatternBase f vn = TuplePattern [PatternBase f vn] SrcLoc
+                       | Id (IdentBase f vn)
+                       | Wildcard (f (CompTypeBase vn)) SrcLoc -- Nothing, i.e. underscore.
+deriving instance Showable f vn => Show (PatternBase f vn)
 
-instance Located (PatternBase ty vn) where
+instance Located (PatternBase f vn) where
   locOf (TuplePattern _ loc) = locOf loc
   locOf (Id ident) = locOf ident
   locOf (Wildcard _ loc) = locOf loc
 
 -- | Function Declarations
-type FunDecBase ty vn = (Name,
-                         DeclTypeBase vn,
-                         [ParamBase vn],
-                         ExpBase ty vn,
-                         SrcLoc)
+data FunDefBase f vn = FunDef { funDefEntryPoint :: Bool
+                                -- ^ True if this function is an entry point.
+                              , funDefName :: Name
+                              , funDefRetType :: TypeDeclBase f vn
+                              , funDefParams :: [ParamBase f vn]
+                              , funDefBody :: ExpBase f vn
+                              , funDefLocation :: SrcLoc
+                              }
+deriving instance Showable f vn => Show (FunDefBase f vn)
 
--- | An entire Futhark program.
-newtype ProgBase ty vn = Prog { progFunctions :: [FunDecBase ty vn] }
-  deriving (Show)
+-- | Type Declarations
+data TypeDefBase f vn = TypeDef { typeAlias :: Name -- Den selverklærede types navn
+                                , userType :: TypeDeclBase f vn -- type-definitionen
+                                , typeDefLocation :: SrcLoc
+                                }
+deriving instance Showable f vn => Show (TypeDefBase f vn)
 
--- | An entire Futhark program, including headers.
-data ProgBaseWithHeaders ty vn =
+instance Located (TypeDefBase f vn) where
+  locOf = locOf . typeDefLocation
+
+data DecBase f vn = FunDec (FunDefBase f vn)
+                  | TypeDec (TypeDefBase f vn)
+-- | Coming soon  | SigDec ..
+--                | ModDec ..
+deriving instance Showable f vn => Show (DecBase f vn)
+
+data ProgBase f vn =
+         Prog  { progTypes :: [TypeDefBase f vn]
+               , progFunctions :: [FunDefBase f vn]
+               }
+deriving instance Showable f vn => Show (ProgBase f vn)
+
+data ProgBaseWithHeaders f vn =
   ProgWithHeaders { progWHHeaders :: [ProgHeader]
-                  , progWHFunctions :: [FunDecBase ty vn]
+                  , progWHDecs :: [DecBase f vn]
                   }
-  deriving (Show)
+deriving instance Showable f vn => Show (ProgBaseWithHeaders f vn)
 
-data ProgHeader = Include String
+data ProgHeader = Include [String]
                 deriving (Show)
 
 -- | A set of names.

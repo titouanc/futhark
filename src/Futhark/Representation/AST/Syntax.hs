@@ -55,8 +55,8 @@ module Futhark.Representation.AST.Syntax
   , ParamT (..)
   , FParam
   , LParam
-  , FunDecT (..)
-  , FunDec
+  , FunDefT (..)
+  , FunDef
   , ProgT(..)
   , Prog
   )
@@ -141,6 +141,8 @@ instance Traversable DimChange where
 -- | A list of 'DimChange's, indicating the new dimensions of an array.
 type ShapeChange d = [DimChange d]
 
+-- | A primitive operation that returns something of known size and
+-- does not itself contain any bindings.
 data PrimOp lore
   = SubExp SubExp
     -- ^ Subexpressions, doubling as tuple literals if the
@@ -193,8 +195,8 @@ data PrimOp lore
   -- ^ Copy the given array.  The result will not alias anything.
 
   -- Array construction.
-  | Iota SubExp SubExp
-  -- ^ @iota(n, x) = [x,x+1,..,x+n-1]@
+  | Iota SubExp SubExp SubExp
+  -- ^ @iota(n, x, s) = [x,x+s,..,x+(n-1)*s]@
   | Replicate SubExp SubExp
   -- ^ @replicate(3,1) = [1, 1, 1]@
   | Scratch PrimType [SubExp]
@@ -216,10 +218,9 @@ data PrimOp lore
     -- and no arrays are returned.
   deriving (Eq, Ord, Show)
 
--- | Futhark Expression Language: literals + vars + int binops + array
--- constructors + array combinators (SOAC) + if + function calls +
--- let + tuples (literals & identifiers) TODO: please add float,
--- double, long int, etc.
+-- | The root Futhark expression type.  The 'Op' constructor contains
+-- a lore-specific operation.  Do-loops, branches and function calls
+-- are special.  Everything else is a simple 'PrimOp'.
 data ExpT lore
   = PrimOp (PrimOp lore)
     -- ^ A simple (non-recursive) operation.
@@ -248,8 +249,7 @@ type Exp = ExpT
 
 -- | Anonymous function for use in a SOAC.
 data LambdaT lore =
-  Lambda { lambdaIndex      :: VName
-         , lambdaParams     :: [LParam lore]
+  Lambda { lambdaParams     :: [LParam lore]
          , lambdaBody       :: BodyT lore
          , lambdaReturnType :: [Type]
          }
@@ -263,8 +263,7 @@ type Lambda = LambdaT
 -- | Anonymous function for use in a SOAC, with an existential return
 -- type.
 data ExtLambdaT lore =
-  ExtLambda { extLambdaIndex      :: VName
-            , extLambdaParams     :: [LParam lore]
+  ExtLambda { extLambdaParams     :: [LParam lore]
             , extLambdaBody       :: BodyT lore
             , extLambdaReturnType :: [ExtType]
             }
@@ -280,20 +279,22 @@ type FParam lore = ParamT (FParamAttr lore)
 type LParam lore = ParamT (LParamAttr lore)
 
 -- | Function Declarations
-data FunDecT lore = FunDec { funDecName :: Name
-                           , funDecRetType :: RetType lore
-                           , funDecParams :: [FParam lore]
-                           , funDecBody :: BodyT lore
+data FunDefT lore = FunDef { funDefEntryPoint :: Bool
+                             -- ^ True if this function is an entry point.
+                           , funDefName :: Name
+                           , funDefRetType :: RetType lore
+                           , funDefParams :: [FParam lore]
+                           , funDefBody :: BodyT lore
                            }
 
-deriving instance Annotations lore => Eq (FunDecT lore)
-deriving instance Annotations lore => Show (FunDecT lore)
-deriving instance Annotations lore => Ord (FunDecT lore)
+deriving instance Annotations lore => Eq (FunDefT lore)
+deriving instance Annotations lore => Show (FunDefT lore)
+deriving instance Annotations lore => Ord (FunDefT lore)
 
-type FunDec = FunDecT
+type FunDef = FunDefT
 
 -- | An entire Futhark program.
-newtype ProgT lore = Prog { progFunctions :: [FunDec lore] }
+newtype ProgT lore = Prog { progFunctions :: [FunDef lore] }
                      deriving (Eq, Ord, Show)
 
 type Prog = ProgT

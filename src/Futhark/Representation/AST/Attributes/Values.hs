@@ -12,11 +12,6 @@ module Futhark.Representation.AST.Attributes.Values
 
          -- * Rearranging
        , permuteArray
-
-         -- * Miscellaneous
-       , arrayString
-       , zeroIsh
-       , oneIsh
        )
        where
 
@@ -77,13 +72,3 @@ permuteArray perm (ArrayVal inarr et oldshape) =
         picks [n] = map (:[]) [0..n-1]
         picks (n:ns) = [ i:is | is <- picks ns, i <- [0..n-1] ]
 permuteArray _ v = v
-
--- | If the given value is a nonempty array containing only
--- characters, return the corresponding 'String', otherwise return
--- 'Nothing'.
-arrayString :: Value -> Maybe String
-arrayString (ArrayVal arr _ _)
-  | c:cs <- elems arr = mapM asChar $ c:cs
-  where asChar (CharValue c) = Just c
-        asChar _           = Nothing
-arrayString _ = Nothing

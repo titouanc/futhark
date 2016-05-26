@@ -29,7 +29,6 @@ import qualified Futhark.Representation.ExplicitMemory as ExplicitMemory
 import Futhark.Representation.ExplicitMemory (ExplicitMemory)
 import Futhark.Representation.AST (Prog, pretty)
 import Futhark.TypeCheck (Checkable)
-import Futhark.Util.Log
 import qualified Futhark.Util.Pretty as PP
 
 import Futhark.Optimise.InliningDeadFun
@@ -106,7 +105,7 @@ passOption :: String -> UntypedPass -> String -> [String] -> FutharkOption
 passOption desc pass short long =
   Option short long
   (NoArg $ Right $ \cfg ->
-   cfg { futharkPipeline = pass : futharkPipeline cfg })
+   cfg { futharkPipeline = futharkPipeline cfg ++ [pass] })
   desc
 
 explicitMemoryProg :: String -> UntypedPassState -> FutharkM ExplicitMemory.Prog
@@ -179,14 +178,14 @@ cseOption :: String -> FutharkOption
 cseOption short =
   passOption (passDescription pass) (UntypedPass perform) short long
   where perform (SOACS prog) config =
-          SOACS <$> runPasses (onePass performCSE) config prog
+          SOACS <$> runPasses (onePass $ performCSE True) config prog
         perform (Kernels prog) config =
-          Kernels <$> runPasses (onePass performCSE) config prog
+          Kernels <$> runPasses (onePass $ performCSE True) config prog
         perform (ExplicitMemory prog) config =
-          ExplicitMemory <$> runPasses (onePass performCSE) config prog
+          ExplicitMemory <$> runPasses (onePass $ performCSE False) config prog
 
         long = [passLongOption pass]
-        pass = performCSE :: Pass SOACS SOACS
+        pass = performCSE True :: Pass SOACS SOACS
 
 soacsPipelineOption :: String -> Pipeline SOACS SOACS -> String -> [String]
                     -> FutharkOption
@@ -259,9 +258,8 @@ main :: IO ()
 main = mainWithOptions newConfig commandLineOptions compile
   where compile [file] config =
           Just $ do
-            (res, msgs) <- runFutharkM $ m file config
-            when (isJust $ futharkVerbose $ futharkConfig config) $
-              liftIO $ T.hPutStrLn stderr $ toText msgs
+            res <- runFutharkM (m file config) $
+                   isJust $ futharkVerbose $ futharkConfig config
             case res of
               Left err -> do
                 dumpError (futharkConfig config) err
@@ -270,7 +268,7 @@ main = mainWithOptions newConfig commandLineOptions compile
         compile _      _      =
           Nothing
         m file config = do
-          source <- liftIO $ readFile file
+          source <- liftIO $ T.readFile file
           prog <- runPipelineOnSource (futharkConfig config) id file source
           runPolyPasses config prog
 

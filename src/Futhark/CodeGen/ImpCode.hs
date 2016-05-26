@@ -94,7 +94,13 @@ data ValueDecl = ArrayValue VName PrimType [DimSize]
                | ScalarValue PrimType VName
                deriving (Show)
 
-data FunctionT a = Function [Param] [Param] (Code a) [ValueDecl] [ValueDecl]
+data FunctionT a = Function { functionEntry :: Bool
+                            , functionOutput :: [Param]
+                            , functionInput :: [Param]
+                            , functionbBody :: Code a
+                            , functionResult :: [ValueDecl]
+                            , functionArgs :: [ValueDecl]
+                            }
                  deriving (Show)
 
 type Function = FunctionT
@@ -114,7 +120,7 @@ data Code a = Skip
               -- of bytes.
             | Write VName (Count Bytes) PrimType Space Exp
             | SetScalar VName Exp
-            | SetMem VName VName
+            | SetMem VName VName Space
               -- ^ Must be in same space.
             | Call [VName] Name [Exp]
             | If Exp (Code a) (Code a)
@@ -198,7 +204,7 @@ newtype Count u = Count { innerExp :: Exp }
 -- | Phantom type for a count of elements.
 data Elements
 
--- | Phanton type for a count of bytes.
+-- | Phantom type for a count of bytes.
 data Bytes
 
 elements :: Exp -> Count Elements
@@ -230,7 +236,7 @@ instance Pretty op => Pretty (Functions op) where
             text "Function " <> ppr name <> colon </> indent 2 (ppr fun)
 
 instance Pretty op => Pretty (FunctionT op) where
-  ppr (Function outs ins body results args) =
+  ppr (Function _ outs ins body results args) =
     text "Inputs:" </> block ins </>
     text "Outputs:" </> block outs </>
     text "Arguments:" </> block args </>
@@ -281,8 +287,8 @@ instance Pretty op => Pretty (Code op) where
     text "<-" <+> ppr val
   ppr (SetScalar name val) =
     ppr name <+> text "<-" <+> ppr val
-  ppr (SetMem dest from) =
-    ppr dest <+> text "<-" <+> ppr from
+  ppr (SetMem dest from space) =
+    ppr dest <+> text "<-" <+> ppr from <+> text "@" <> ppr space
   ppr (Assert e _) =
     text "assert" <> parens (ppr e)
   ppr (Copy dest destoffset destspace src srcoffset srcspace size) =
@@ -354,8 +360,8 @@ instance Foldable FunctionT where
   foldMap = foldMapDefault
 
 instance Traversable FunctionT where
-  traverse f (Function outs ins body results args) =
-    Function outs ins <$> traverse f body <*> pure results <*> pure args
+  traverse f (Function entry outs ins body results args) =
+    Function entry outs ins <$> traverse f body <*> pure results <*> pure args
 
 instance Functor Code where
   fmap = fmapDefault
@@ -388,8 +394,8 @@ instance Traversable Code where
     pure $ Write name i bt val space
   traverse _ (SetScalar name val) =
     pure $ SetScalar name val
-  traverse _ (SetMem dest from) =
-    pure $ SetMem dest from
+  traverse _ (SetMem dest from space) =
+    pure $ SetMem dest from space
   traverse _ (Assert e loc) =
     pure $ Assert e loc
   traverse _ (Call dests fname args) =
@@ -423,7 +429,7 @@ instance FreeIn a => FreeIn (Code a) where
     freeIn name <> freeIn size
   freeIn (Copy dest x _ src y _ n) =
     freeIn dest <> freeIn x <> freeIn src <> freeIn y <> freeIn n
-  freeIn (SetMem x y) =
+  freeIn (SetMem x y _) =
     freeIn x <> freeIn y
   freeIn (Write v i _ _ e) =
     freeIn v <> freeIn i <> freeIn e

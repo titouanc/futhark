@@ -11,7 +11,6 @@ module Futhark.Compiler
        )
 where
 
-import Control.Applicative
 import Data.Monoid
 import Control.Monad
 import Control.Monad.IO.Class
@@ -30,13 +29,11 @@ import Futhark.Actions
 
 import qualified Language.Futhark as E
 import qualified Language.Futhark.TypeChecker as E
-import qualified Language.Futhark.Renamer as E
 
 import Futhark.MonadFreshNames
 import Futhark.Representation.AST
 import qualified Futhark.Representation.SOACS as I
 import qualified Futhark.TypeCheck as I
-import Futhark.Util.Log
 
 data FutharkConfig = FutharkConfig {
     futharkVerbose :: Maybe (Maybe FilePath)
@@ -59,9 +56,7 @@ runCompilerOnProgram :: FutharkConfig
                      -> FilePath
                      -> IO ()
 runCompilerOnProgram config pipeline action file = do
-  (res, msgs) <- runFutharkM compile
-  when (isJust $ futharkVerbose config) $
-    liftIO $ T.hPutStrLn stderr $ toText msgs
+  res <- runFutharkM compile $ isJust $ futharkVerbose config
   case res of
     Left err -> liftIO $ do
       dumpError config err
@@ -69,10 +64,10 @@ runCompilerOnProgram config pipeline action file = do
     Right () ->
       return ()
   where compile = do
-          source <- liftIO $ readFile file
+          source <- liftIO $ T.readFile file
           prog <- runPipelineOnSource config pipeline file source
           when (isJust $ futharkVerbose config) $
-            liftIO $ hPutStrLn stderr $ "Running " ++ actionDescription action ++ "."
+            liftIO $ hPutStrLn stderr $ "Running action " ++ actionName action
           actionProcedure action prog
 
 runPipelineOnProgram :: FutharkConfig
@@ -80,17 +75,18 @@ runPipelineOnProgram :: FutharkConfig
                      -> FilePath
                      -> FutharkM (Prog tolore)
 runPipelineOnProgram config pipeline file = do
-  source <- liftIO $ readFile file
+  source <- liftIO $ T.readFile file
   runPipelineOnSource config pipeline file source
 
 runPipelineOnSource :: FutharkConfig
                     -> Pipeline I.SOACS tolore
                     -> FilePath
-                    -> String
+                    -> T.Text
                     -> FutharkM (Prog tolore)
 runPipelineOnSource config pipeline filename srccode = do
   parsed_prog <- parseSourceProgram filename srccode
-  (tagged_ext_prog, namesrc) <- E.tagProg <$> typeCheckSourceProgram parsed_prog
+
+  (tagged_ext_prog, namesrc) <- typeCheckSourceProgram parsed_prog
   putNameSource namesrc
   res <- internaliseProg tagged_ext_prog
   case res of
@@ -104,7 +100,7 @@ runPipelineOnSource config pipeline filename srccode = do
                          , pipelineValidate = True
                          }
 
-parseSourceProgram :: FilePath -> String
+parseSourceProgram :: FilePath -> T.Text
                    -> FutharkM E.UncheckedProg
 parseSourceProgram filename file_contents = do
   parsed <- liftIO $ parseFuthark filename file_contents
@@ -113,7 +109,7 @@ parseSourceProgram filename file_contents = do
     Right prog -> return prog
 
 typeCheckSourceProgram :: E.UncheckedProg
-                       -> FutharkM (E.ProgBase E.CompTypeBase I.Name)
+                       -> FutharkM (E.Prog, VNameSource)
 typeCheckSourceProgram prog =
   case E.checkProg prog of
     Left err    -> compileError (T.pack $ show err) ()
@@ -128,7 +124,7 @@ typeCheckInternalProgram prog =
 interpretAction' :: Action I.SOACS
 interpretAction' =
   interpretAction parseValues'
-  where parseValues' :: FilePath -> String -> Either ParseError [I.Value]
+  where parseValues' :: FilePath -> T.Text -> Either ParseError [I.Value]
         parseValues' path s =
           fmap concat $ mapM internalise =<< parseValues path s
         internalise v =

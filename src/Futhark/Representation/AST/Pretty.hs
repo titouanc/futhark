@@ -21,7 +21,6 @@ import Data.Monoid
 import Futhark.Util.Pretty
 
 import Futhark.Representation.AST.Syntax
-import Futhark.Representation.AST.Attributes.Values
 import Futhark.Util
 
 -- | The class of lores whose annotations can be prettyprinted.
@@ -33,8 +32,8 @@ class (Annotations lore,
        Pretty (Op lore)) => PrettyLore lore where
   ppBindingLore :: Binding lore -> Maybe Doc
   ppBindingLore = const Nothing
-  ppFunDecLore :: FunDec lore -> Maybe Doc
-  ppFunDecLore = const Nothing
+  ppFunDefLore :: FunDef lore -> Maybe Doc
+  ppFunDefLore = const Nothing
   ppLambdaLore :: Lambda lore -> Maybe Doc
   ppLambdaLore = const Nothing
   ppExpLore :: Exp lore -> Maybe Doc
@@ -42,10 +41,6 @@ class (Annotations lore,
 
 commastack :: [Doc] -> Doc
 commastack = align . stack . punctuate comma
-
-instance Pretty Uniqueness where
-  ppr Unique = star
-  ppr Nonunique = empty
 
 instance Pretty NoUniqueness where
   ppr _ = mempty
@@ -56,8 +51,6 @@ instance Pretty Commutativity where
 
 instance Pretty Value where
   ppr (PrimVal bv) = ppr bv
-  ppr v
-    | Just s <- arrayString v = text $ show s
   ppr (ArrayVal a t _)
     | null $ elems a = text "empty" <> parens (ppr t)
   ppr (ArrayVal a t (_:rowshape@(_:_))) =
@@ -196,7 +189,7 @@ instance PrettyLore lore => Pretty (PrimOp lore) where
   ppr (Index cs v idxs) =
     ppCertificates cs <> ppr v <>
     brackets (commasep (map ppr idxs))
-  ppr (Iota e x) = text "iota" <> apply [ppr e, ppr x]
+  ppr (Iota e x s) = text "iota" <> apply [ppr e, ppr x, ppr s]
   ppr (Replicate ne ve) =
     text "replicate" <> apply [ppr ne, align (ppr ve)]
   ppr (Scratch t shape) =
@@ -238,30 +231,30 @@ instance PrettyLore lore => Pretty (Exp lore) where
           (valparams, valinit) = unzip val
 
 instance PrettyLore lore => Pretty (Lambda lore) where
-  ppr lambda@(Lambda index params body rettype) =
+  ppr lambda@(Lambda params body rettype) =
     maybe id (</>) (ppLambdaLore lambda) $
     text "fn" <+> ppTuple' rettype <+>
-    parens (ppr index <> semi <+>
-            commasep (map ppr params)) <+>
+    parens (commasep (map ppr params)) <+>
     text "=>" </> indent 2 (ppr body)
 
 instance PrettyLore lore => Pretty (ExtLambda lore) where
-  ppr (ExtLambda index params body rettype) =
+  ppr (ExtLambda params body rettype) =
     text "fn" <+> ppTuple' rettype <+>
-    parens (ppr index <> semi <+>
-            commasep (map ppr params)) <+>
+    parens (commasep (map ppr params)) <+>
     text "=>" </> indent 2 (ppr body)
 
 instance Pretty ExtRetType where
   ppr = ppTuple' . retTypeValues
 
-instance PrettyLore lore => Pretty (FunDec lore) where
-  ppr fundec@(FunDec name rettype args body) =
-    maybe id (</>) (ppFunDecLore fundec) $
-    text "fun" <+> ppr rettype <+>
+instance PrettyLore lore => Pretty (FunDef lore) where
+  ppr fundec@(FunDef entry name rettype args body) =
+    maybe id (</>) (ppFunDefLore fundec) $
+    text fun <+> ppr rettype <+>
     text (nameToString name) <//>
     apply (map ppr args) <+>
     equals </> indent 2 (ppr body)
+    where fun | entry = "entry"
+              | otherwise = "fun"
 
 instance PrettyLore lore => Pretty (Prog lore) where
   ppr = stack . punctuate line . map ppr . progFunctions

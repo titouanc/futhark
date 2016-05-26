@@ -46,7 +46,7 @@ data HostOp = CallKernel CallKernel
 
 data CallKernel = Map MapKernel
                 | AnyKernel Kernel
-                | MapTranspose PrimType VName Exp VName Exp Exp Exp Exp
+                | MapTranspose PrimType VName Exp VName Exp Exp Exp Exp Exp
             deriving (Show)
 
 -- | A generic kernel containing arbitrary kernel code.
@@ -91,7 +91,7 @@ getKernels = nubBy sameKernel . execWriter . traverse getFunKernels
           tell [kernel]
         getFunKernels _ =
           return ()
-        sameKernel (MapTranspose bt1 _ _ _ _ _ _ _) (MapTranspose bt2 _ _ _ _ _ _ _) =
+        sameKernel (MapTranspose bt1 _ _ _ _ _ _ _ _) (MapTranspose bt2 _ _ _ _ _ _ _ _) =
           bt1 == bt2
         sameKernel _ _ = False
 
@@ -114,12 +114,15 @@ instance Pretty HostOp where
 instance Pretty CallKernel where
   ppr (Map k) = ppr k
   ppr (AnyKernel k) = ppr k
-  ppr (MapTranspose bt dest destoffset src srcoffset num_arrays size_x size_y) =
+  ppr (MapTranspose bt dest destoffset src srcoffset num_arrays size_x size_y total_elems) =
     text "mapTranspose" <>
     parens (ppr bt <> comma </>
             ppMemLoc dest destoffset <> comma </>
             ppMemLoc src srcoffset <> comma </>
-            ppr num_arrays <> comma <+> ppr size_x <> comma <+> ppr size_y)
+            ppr num_arrays <> comma <+>
+            ppr size_x <> comma <+>
+            ppr size_y <> comma <+>
+            ppr total_elems)
     where ppMemLoc base offset =
             ppr base <+> text "+" <+> ppr offset
 
@@ -154,7 +157,7 @@ data KernelOp = GetGroupId VName Int
               | GetLocalSize VName Int
               | GetGlobalSize VName Int
               | GetGlobalId VName Int
-              | GetWaveSize VName
+              | GetLockstepWidth VName
               | Barrier
               deriving (Show)
 
@@ -174,9 +177,9 @@ instance Pretty KernelOp where
   ppr (GetGlobalId dest i) =
     ppr dest <+> text "<-" <+>
     text "get_global_id" <> parens (ppr i)
-  ppr (GetWaveSize dest) =
+  ppr (GetLockstepWidth dest) =
     ppr dest <+> text "<-" <+>
-    text "get_wave_size()"
+    text "get_lockstep_width()"
   ppr Barrier =
     text "barrier()"
 

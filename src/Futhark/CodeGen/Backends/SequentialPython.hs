@@ -10,16 +10,26 @@ import qualified Futhark.CodeGen.ImpCode.Sequential as Imp
 import qualified Futhark.CodeGen.ImpGen.Sequential as ImpGen
 import qualified Futhark.CodeGen.Backends.GenericPython as GenericPython
 import Futhark.CodeGen.Backends.GenericPython.Definitions
+import Futhark.CodeGen.Backends.GenericPython.AST
 import Futhark.MonadFreshNames
 
 import Prelude
 
-compileProg :: MonadFreshNames m => Bool -> Prog -> m (Either String String)
-compileProg moduleConfig = traverse (GenericPython.compileProg imports defines operations () [] []) <=< ImpGen.compileProg
-  where shebang = if moduleConfig then [] else ["#!/usr/bin/env python"]
-        imports = shebang ++ ["from numpy import *", "from ctypes import *", "import sys", "import re", "import time", "import math"]
-        defines = [pyTestMain, pyFunctions, pyUtility] --we could create a seperatate py file that contains all the depenendies and just import it
+compileProg :: MonadFreshNames m => Maybe String -> Prog -> m (Either String String)
+compileProg module_name =
+  ImpGen.compileProg >=>
+  traverse (GenericPython.compileProg
+            module_name
+            GenericPython.emptyConstructor
+            imports
+            defines
+            operations () [] [])
+  where imports = [Import "sys" Nothing,
+                   Import "numpy" $ Just "np",
+                   Import "ctypes" $ Just "ct",
+                   Import "time" Nothing]
+        defines = [Escape pyTestMain, Escape pyFunctions]
         operations :: GenericPython.Operations Imp.Sequential ()
         operations = GenericPython.defaultOperations {
-          GenericPython.opsCompiler = const $ return GenericPython.Done
+          GenericPython.opsCompiler = const $ return ()
         }

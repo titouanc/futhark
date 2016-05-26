@@ -1,10 +1,7 @@
 {-# LANGUAGE OverloadedStrings, TupleSections, FlexibleContexts #-}
 -- | This program is a convenience utility for running the Futhark
 -- test suite, and its test programs.
-module Main ( ProgramTest (..)
-            , TestRun (..)
-            , TestCase (..)
-            , main) where
+module Main (main) where
 
 
 import Control.Applicative
@@ -24,6 +21,9 @@ import qualified Data.Text.IO as T
 import qualified Data.HashMap.Lazy as HM
 import System.Console.GetOpt
 import System.Directory
+import System.Directory.Tree (readDirectoryWith, flattenDir,
+                              DirTree(File), AnchoredDirTree(..),
+                              FileName)
 import System.Process.Text (readProcessWithExitCode)
 import System.Exit
 import System.IO
@@ -37,7 +37,6 @@ import Futhark.Representation.AST.Syntax.Core hiding (Prim)
 import Futhark.Analysis.Metrics
 import Futhark.Pipeline
 import Futhark.Compiler
-import Futhark.Util.Log
 import Futhark.Test
 
 import Futhark.Util.Options
@@ -61,7 +60,9 @@ data TestResult = Success
 
 data TestCase = TestCase { testCaseProgram :: FilePath
                          , testCaseTest :: ProgramTest
-                         , testCasePrograms :: ProgConfig
+                         , _testCasePrograms :: ProgConfig
+                         , _testCaseOptions :: [String]
+                         -- ^ Extra options to pass to the program.
                          }
                 deriving (Show)
 
@@ -79,18 +80,18 @@ progNotFound s = s <> ": command not found"
 
 optimisedProgramMetrics :: StructurePipeline -> FilePath -> TestM AstMetrics
 optimisedProgramMetrics (SOACSPipeline pipeline) program = do
-  res <- io $ runFutharkM $ runPipelineOnProgram newFutharkConfig pipeline program
+  res <- io $ runFutharkM (runPipelineOnProgram newFutharkConfig pipeline program) False
   case res of
-    (Left err, msgs) ->
-      throwError $ T.unlines [toText msgs, errorDesc err]
-    (Right prog, _) ->
+    Left err ->
+      throwError $ errorDesc err
+    Right prog ->
       return $ progMetrics prog
 optimisedProgramMetrics (KernelsPipeline pipeline) program = do
-  res <- io $ runFutharkM $ runPipelineOnProgram newFutharkConfig pipeline program
+  res <- io $ runFutharkM (runPipelineOnProgram newFutharkConfig pipeline program) False
   case res of
-    (Left err, msgs) ->
-      throwError $ T.unlines [toText msgs, errorDesc err]
-    (Right prog, _) ->
+    Left err ->
+      throwError $ errorDesc err
+    Right prog ->
       return $ progMetrics prog
 
 testMetrics :: FilePath -> StructureTest -> TestM ()
@@ -110,7 +111,7 @@ testMetrics program (StructureTest pipeline expected) = context "Checking metric
             _ -> return ()
 
 runTestCase :: TestCase -> TestM ()
-runTestCase (TestCase program testcase progs) = do
+runTestCase (TestCase program testcase progs extra_options) = do
   forM_ (testExpectedStructure testcase) $ testMetrics program
 
   case testAction testcase of
@@ -133,7 +134,7 @@ runTestCase (TestCase program testcase progs) = do
 
     RunCases run_cases ->
       forM_ run_cases $ \run -> do
-        unless (runMode run == CompiledOnly) $
+        unless (runMode run `elem` [CompiledOnly, NoTravis]) $
           forM_ (configInterpreters progs) $ \interpreter ->
             context ("Interpreting with " <> T.pack interpreter) $
               interpretTestProgram interpreter program run
@@ -141,7 +142,7 @@ runTestCase (TestCase program testcase progs) = do
         unless (runMode run == InterpretedOnly) $
           forM_ (configCompilers progs) $ \compiler ->
             context ("Compiling with " <> T.pack compiler) $
-              compileTestProgram compiler program run
+              compileTestProgram extra_options compiler program run
 
 checkError :: ExpectedError -> T.Text -> TestM ()
 checkError (ThisError regex_s regex) err
@@ -164,13 +165,13 @@ runResult _ (ExitFailure code) _ stderr_s =
 getExpectedResult :: (Functor m, MonadIO m) =>
                      FilePath -> ExpectedResult Values
                   -> m (ExpectedResult [Value])
-getExpectedResult dir (Succeeds (Just vals)) = Succeeds <$> Just <$> getValues dir vals
+getExpectedResult dir (Succeeds (Just vals)) = Succeeds . Just <$> getValues dir vals
 getExpectedResult _   (Succeeds Nothing) = return $ Succeeds Nothing
 getExpectedResult _   (RunTimeFailure err) = return $ RunTimeFailure err
 
 interpretTestProgram :: String -> FilePath -> TestRun -> TestM ()
 interpretTestProgram futharki program (TestRun _ inputValues expectedResult) = do
-  input <- T.unlines <$> map prettyText <$> getValues dir inputValues
+  input <- T.unlines . map prettyText <$> getValues dir inputValues
   expectedResult' <- getExpectedResult dir expectedResult
   (code, output, err) <- io $ readProcessWithExitCode futharki [program] input
   case code of
@@ -180,8 +181,8 @@ interpretTestProgram futharki program (TestRun _ inputValues expectedResult) = d
       compareResult program expectedResult' =<< runResult program code output err
   where dir = takeDirectory program
 
-compileTestProgram :: String -> FilePath -> TestRun -> TestM ()
-compileTestProgram futharkc program (TestRun _ inputValues expectedResult) = do
+compileTestProgram :: [String] -> String -> FilePath -> TestRun -> TestM ()
+compileTestProgram extra_options futharkc program (TestRun _ inputValues expectedResult) = do
   input <- getValuesText dir inputValues
   expectedResult' <- getExpectedResult dir expectedResult
   (futcode, _, futerr) <-
@@ -194,10 +195,12 @@ compileTestProgram futharkc program (TestRun _ inputValues expectedResult) = do
   -- Explicitly prefixing the current directory is necessary for
   -- readProcessWithExitCode to find the binary when binOutputf has
   -- no path component.
-  (progCode, output, progerr) <-
-    io $ readProcessWithExitCode ("." </> binOutputf) [] input
-  withExceptT validating $
-    compareResult program expectedResult' =<< runResult program progCode output progerr
+  let binpath = "." </> binOutputf
+  context ("Running " <> T.pack (unwords $ binpath : extra_options)) $ do
+    (progCode, output, progerr) <-
+      io $ readProcessWithExitCode binpath extra_options input
+    withExceptT validating $
+      compareResult program expectedResult' =<< runResult program progCode output progerr
   where binOutputf = program `replaceExtension` "bin"
         dir = takeDirectory program
         validating = ("validating test result:\n"<>)
@@ -265,10 +268,10 @@ catching m = m `catch` save
 doTest :: TestCase -> IO TestResult
 doTest = catching . runTestM . runTestCase
 
-makeTestCase :: ProgConfig -> TestMode -> FilePath -> IO TestCase
-makeTestCase progs mode file = do
+makeTestCase :: TestConfig -> TestMode -> FilePath -> IO TestCase
+makeTestCase config mode file = do
   spec <- applyMode mode <$> testSpecFromFile file
-  return $ TestCase file spec progs
+  return $ TestCase file spec (configPrograms config) (configExtraOptions config)
 
 applyMode :: TestMode -> ProgramTest -> ProgramTest
 applyMode mode test =
@@ -323,13 +326,15 @@ reportText first failed passed remaining =
          show remaining ++ " to go.)\n"
 
 runTests :: TestConfig -> [FilePath] -> IO ()
-runTests config files = do
+runTests config paths = do
+  files <- concat <$> mapM testPrograms paths
+
   let mode = configTestMode config
   testmvar <- newEmptyMVar
   resmvar <- newEmptyMVar
   concurrency <- getNumCapabilities
   replicateM_ concurrency $ forkIO $ runTest testmvar resmvar
-  all_tests <- mapM (makeTestCase (configPrograms config) mode) files
+  all_tests <- mapM (makeTestCase config mode) files
   let (excluded, included) = partition (excludedTest config) all_tests
   _ <- forkIO $ mapM_ (putMVar testmvar) included
   isTTY <- (&& mode /= OnTravis) <$> hIsTerminalDevice stdout
@@ -357,6 +362,17 @@ runTests config files = do
   exitWith $ case failed of 0 -> ExitSuccess
                             _ -> ExitFailure 1
 
+testPrograms :: FilePath -> IO [FileName]
+testPrograms dir = filter isFut <$> directoryContents dir
+  where isFut = (==".fut") . takeExtension
+
+directoryContents :: FilePath -> IO [FileName]
+directoryContents dir = do
+  _ :/ tree <- readDirectoryWith return dir
+  return $ mapMaybe isFile $ flattenDir tree
+  where isFile (File _ path) = Just path
+        isFile _             = Nothing
+
 ---
 --- Configuration and command line parsing
 ---
@@ -365,6 +381,8 @@ data TestConfig = TestConfig
                   { configTestMode :: TestMode
                   , configPrograms :: ProgConfig
                   , configExclude :: [T.Text]
+                  , configExtraOptions :: [String]
+                  -- ^ Extra options passed to the programs being run.
                   }
 
 defaultConfig :: TestConfig
@@ -376,6 +394,7 @@ defaultConfig = TestConfig { configTestMode = Everything
                              , configInterpreter = Left "futharki"
                              , configTypeChecker = Left "futhark"
                              }
+                           , configExtraOptions = []
                            }
 
 data ProgConfig = ProgConfig
@@ -454,6 +473,12 @@ commandLineOptions = [
                config { configExclude = T.pack tag : configExclude config })
      "TAG")
     "Exclude test programs that define this tag."
+  , Option "p" ["pass-option"]
+    (ReqArg (\opt ->
+               Right $ \config ->
+               config { configExtraOptions = opt : configExtraOptions config })
+     "OPT")
+    "Pass this option to programs being run."
   ]
 
 main :: IO ()

@@ -1,6 +1,10 @@
 {-# LANGUAGE OverloadedStrings, GeneralizedNewtypeDeriving #-}
 module Futhark.CodeGen.Backends.GenericPython
   ( compileProg
+  , Constructor (..)
+  , emptyConstructor
+
+  , compileDim
   , compileExp
   , compileCode
   , compilePrimType
@@ -9,13 +13,16 @@ module Futhark.CodeGen.Backends.GenericPython
   , Operations (..)
   , defaultOperations
 
+  , unpackDim
+
   , CompilerM (..)
   , OpCompiler
-  , OpCompilerResult(..)
   , WriteScalar
   , ReadScalar
   , Allocate
   , Copy
+  , EntryOutput
+  , EntryInput
 
   , CompilerEnv(..)
   , CompilerState(..)
@@ -23,10 +30,10 @@ module Futhark.CodeGen.Backends.GenericPython
   , stms
   , collect'
   , collect
-  , asscalar
+  , simpleCall
 
   , compileSizeOfType
-    ) where
+  ) where
 
 import Control.Applicative
 import Control.Monad.Identity
@@ -34,8 +41,7 @@ import Control.Monad.State
 import Control.Monad.Reader
 import Control.Monad.Writer
 import Control.Monad.RWS
-
-import NeatInterpolation()
+import Data.Maybe
 
 import qualified Data.HashMap.Lazy as HM
 
@@ -47,16 +53,14 @@ import Futhark.Representation.AST.Syntax (Space(..))
 import qualified Futhark.CodeGen.ImpCode as Imp hiding (dimSizeToExp)
 import Futhark.CodeGen.Backends.GenericPython.AST
 import Futhark.CodeGen.Backends.GenericPython.Options
+import Futhark.CodeGen.Backends.GenericPython.Definitions
 import Futhark.Util.Pretty(pretty)
-import Futhark.Representation.AST.Attributes (builtInFunctions)
+import Futhark.Util (zEncodeString)
+import Futhark.Representation.AST.Attributes (builtInFunctions, isBuiltInFunction)
 
 -- | A substitute expression compiler, tried before the main
 -- compilation function.
-type OpCompiler op s = op -> CompilerM op s (OpCompilerResult op)
-
--- | The result of the substitute expression compiler.
-data OpCompilerResult op = CompileCode (Imp.Code op) -- ^ Equivalent to this code.
-                         | Done -- ^ Code added via monadic interface.
+type OpCompiler op s = op -> CompilerM op s ()
 
 -- | Write a scalar to the given memory block with the given index and
 -- in the given memory space.
@@ -79,11 +83,25 @@ type Copy op s = VName -> PyExp -> Imp.Space ->
                  PyExp -> PrimType ->
                  CompilerM op s ()
 
+-- | Construct the Python array being returned from an entry point.
+type EntryOutput op s = VName -> Imp.SpaceId ->
+                        PrimType -> [Imp.DimSize] ->
+                        CompilerM op s PyExp
+
+-- | Unpack the array being passed to an entry point.
+type EntryInput op s = VName -> Imp.MemSize -> Imp.SpaceId ->
+                       PrimType -> [Imp.DimSize] ->
+                       PyExp ->
+                       CompilerM op s ()
+
+
 data Operations op s = Operations { opsWriteScalar :: WriteScalar op s
                                   , opsReadScalar :: ReadScalar op s
                                   , opsAllocate :: Allocate op s
                                   , opsCopy :: Copy op s
                                   , opsCompiler :: OpCompiler op s
+                                  , opsEntryOutput :: EntryOutput op s
+                                  , opsEntryInput :: EntryInput op s
                                   }
 
 -- | A set of operations that fail for every operation involving
@@ -95,6 +113,8 @@ defaultOperations = Operations { opsWriteScalar = defWriteScalar
                                , opsAllocate  = defAllocate
                                , opsCopy = defCopy
                                , opsCompiler = defCompiler
+                               , opsEntryOutput = defEntryOutput
+                               , opsEntryInput = defEntryInput
                                }
   where defWriteScalar _ _ _ _ _ =
           fail "Cannot write to non-default memory space because I am dumb"
@@ -106,6 +126,10 @@ defaultOperations = Operations { opsWriteScalar = defWriteScalar
           fail "Cannot copy to or from non-default memory space"
         defCompiler _ =
           fail "The default compiler cannot compile extended operations"
+        defEntryOutput _ _ _ _ =
+          fail "Cannot return array not in default memory space"
+        defEntryInput _ _ _ _ =
+          fail "Cannot accept array not in default memory space"
 
 data CompilerEnv op s = CompilerEnv {
     envOperations :: Operations op s
@@ -127,13 +151,19 @@ envAllocate = opsAllocate . envOperations
 envCopy :: CompilerEnv op s -> Copy op s
 envCopy = opsCopy . envOperations
 
+envEntryOutput :: CompilerEnv op s -> EntryOutput op s
+envEntryOutput = opsEntryOutput . envOperations
+
+envEntryInput :: CompilerEnv op s -> EntryInput op s
+envEntryInput = opsEntryInput . envOperations
+
 newCompilerEnv :: Imp.Functions op -> Operations op s -> CompilerEnv op s
 newCompilerEnv (Imp.Functions funs) ops =
   CompilerEnv { envOperations = ops
               , envFtable = ftable <> builtinFtable
               }
   where ftable = HM.fromList $ map funReturn funs
-        funReturn (name, Imp.Function outparams _ _ _ _) = (name, paramsTypes outparams)
+        funReturn (name, Imp.Function _ outparams _ _ _ _) = (name, paramsTypes outparams)
         builtinFtable = HM.map (map Imp.Scalar . snd) builtInFunctions
 
 data CompilerState s = CompilerState {
@@ -175,13 +205,7 @@ stms :: [PyStmt] -> CompilerM op s ()
 stms = mapM_ stm
 
 futharkFun :: String -> String
-futharkFun s = "futhark_" ++ s
-
---we replace the entry points with appended _
-replaceFuncName :: String -> PyFunc -> PyFunc
-replaceFuncName key fun@(PyFunc str args body)
-  | str == key = PyFunc ('_':str) args body
-  | otherwise = fun
+futharkFun s = "futhark_" ++ zEncodeString s
 
 paramsTypes :: [Imp.Param] -> [Imp.Type]
 paramsTypes = map paramType
@@ -199,8 +223,8 @@ runCompilerM :: Imp.Functions op -> Operations op s
 runCompilerM prog ops src userstate (CompilerM m) =
   fst $ evalRWS m (newCompilerEnv prog ops) (newCompilerState src userstate)
 
-timingOption :: Option
-timingOption =
+standardOptions :: [Option]
+standardOptions = [
   Option { optionLongName = "write-runtime-to"
          , optionShortName = Just 't'
          , optionArgument = RequiredArgument
@@ -211,38 +235,78 @@ timingOption =
            , Assign (Var "runtime_file") $
              simpleCall "open" [Var "optarg", StringLiteral "w"]
            ]
-  }
+         },
+  Option { optionLongName = "runs"
+         , optionShortName = Just 'r'
+         , optionArgument = RequiredArgument
+         , optionAction =
+           [ Assign (Var "num_runs") $ Var "optarg"
+           , Assign (Var "do_warmup_run") $ Constant $ value True
+           ]
+         }
+  ]
+
+
+-- | The class generated by the code generator must have a
+-- constructor, although it can be vacuous.
+data Constructor = Constructor [String] [PyStmt]
+
+-- | A constructor that takes no arguments and does nothing.
+emptyConstructor :: Constructor
+emptyConstructor = Constructor ["self"] [Pass]
+
+constructorToFunDef :: Constructor -> PyFunDef
+constructorToFunDef (Constructor params body) =
+  Def "__init__" params body
 
 compileProg :: MonadFreshNames m =>
-               [PyImport]
-            -> [PyDefinition]
+               Maybe String
+            -> Constructor
+            -> [PyStmt]
+            -> [PyStmt]
             -> Operations op s
             -> s
             -> [PyStmt]
             -> [Option]
             -> Imp.Functions op
             -> m String
-compileProg imports defines ops userstate pre_timing options prog@(Imp.Functions funs)  = do
+compileProg module_name constructor imports defines ops userstate pre_timing options prog@(Imp.Functions funs) = do
   src <- getNameSource
-  let (prog', maincall) = runCompilerM prog ops src userstate compileProg'
-  return $ pretty (PyProg prog' (imports++["import argparse"]) defines) ++ "\n" ++ pretty maincall
-  where compileProg' = do
+  let prog' = runCompilerM prog ops src userstate compileProg'
+      maybe_shebang =
+        case module_name of Nothing -> "#!/usr/bin/env python\n"
+                            Just _  -> ""
+  return $ maybe_shebang ++
+    pretty (PyProg $ imports ++
+            [Import "argparse" Nothing] ++
+            defines ++
+            [Escape pyUtility] ++
+            prog')
+  where constructor' = constructorToFunDef constructor
+        compileProg' = do
           definitions <- mapM compileFunc funs
-          let mainname = nameFromString "main"
-          (main, maincall) <- case lookup mainname funs of
-            Nothing   -> fail "No main function"
-            Just func -> compileEntryFun pre_timing options (mainname, func)
+          case module_name of
+            Just name -> do
+              entry_points <- mapM compileEntryFun $ filter (Imp.functionEntry . snd) funs
+              return [ClassDef $ Class name $ map FunDef $
+                      constructor' : definitions ++ entry_points]
+            Nothing -> do
+              mainfunc <- case lookup defaultEntryPoint funs of
+                Nothing   -> fail "No main function"
+                Just func -> return func
+              let classinst = Assign (Var "self") $ simpleCall "internal" []
+              maincall <- callEntryFun pre_timing options (defaultEntryPoint, mainfunc)
+              return $ ClassDef (Class "internal" $ map FunDef $
+                                 constructor' : definitions) :
+                       classinst :
+                       maincall
 
-          let renamed = map (replaceFuncName "futhark_main") definitions
-
-          return (renamed ++ [main], maincall)
-
-compileFunc :: (Name, Imp.Function op) -> CompilerM op s PyFunc
-compileFunc (fname, Imp.Function outputs inputs body _ _) = do
+compileFunc :: (Name, Imp.Function op) -> CompilerM op s PyFunDef
+compileFunc (fname, Imp.Function _ outputs inputs body _ _) = do
   body' <- collect $ compileCode body
   let inputs' = map (pretty . Imp.paramName) inputs
   let ret = Return $ tupleOrSingle $ compileOutput outputs
-  return $ PyFunc (futharkFun . nameToString $ fname) inputs' (body'++[ret])
+  return $ Def (futharkFun . nameToString $ fname) ("self" : inputs') (body'++[ret])
 
 tupleOrSingle :: [PyExp] -> PyExp
 tupleOrSingle [e] = e
@@ -256,18 +320,18 @@ compileDim :: Imp.DimSize -> PyExp
 compileDim (Imp.ConstSize i) = Constant $ value i
 compileDim (Imp.VarSize v) = Var $ pretty v
 
-unpackDim :: VName -> Imp.DimSize -> Int32 -> CompilerM op s ()
+unpackDim :: PyExp -> Imp.DimSize -> Int32 -> CompilerM op s ()
 unpackDim arr_name (Imp.ConstSize c) i = do
-  let shape_name = Var $ pretty arr_name  ++ ".shape"
+  let shape_name = Field arr_name "shape"
   let constant_c = Constant $ value c
   let constant_i = Constant $ value i
-  stm $ Assert (BinaryOp "==" constant_c (Index shape_name $ IdxExp constant_i)) "shape dimension is incorrect for the constant dimension"
+  stm $ Assert (BinOp "==" constant_c (Index shape_name $ IdxExp constant_i)) "shape dimension is incorrect for the constant dimension"
 
 unpackDim arr_name (Imp.VarSize var) i = do
-  let shape_name = Var $ pretty arr_name  ++ ".shape"
+  let shape_name = Field arr_name "shape"
   let src = Index shape_name $ IdxExp $ Constant $ value i
   let dest = Var $ pretty var
-  let makeNumpy = simpleCall "int32" [src]
+  let makeNumpy = simpleCall "np.int32" [src]
   stm $ Assign dest makeNumpy
 
 hashSizeVars :: [Imp.Param] -> HM.HashMap VName VName
@@ -284,73 +348,65 @@ hashSpace = mconcat . map hashSpace'
         hashSpace' _ =
           HM.empty
 
-packArg :: HM.HashMap VName VName
-        -> HM.HashMap VName Imp.Space
-        -> Imp.ValueDecl
-        -> CompilerM op s ()
-packArg _ _ (Imp.ScalarValue bt vname) = do
-  let vname' = Var $ pretty vname
-  let npobject = compilePrimToNp bt
-  let call = simpleCall npobject [vname']
+-- | A description of a value returned by an entry point.
+data EntryPointValue =
+  -- | Return a scalar of the given type stored in the given variable.
+    ScalarValue PrimType VName
+  -- | Return an array, given memory block, size, space, and
+  -- dimensions of the array.
+  | ArrayValue VName Imp.MemSize Space PrimType [Imp.DimSize]
+
+createValue :: HM.HashMap VName VName
+             -> HM.HashMap VName Imp.Space -> Imp.ValueDecl
+             -> CompilerM op s EntryPointValue
+createValue _ _ (Imp.ScalarValue t name) =
+  return $ ScalarValue t name
+createValue sizes spaces (Imp.ArrayValue mem bt dims) = do
+  size <- maybe noMemSize return $ HM.lookup mem sizes
+  space <- maybe noMemSpace return $ HM.lookup mem spaces
+  return $ ArrayValue mem (Imp.VarSize size) space bt dims
+  where noMemSpace = fail $ "createValue: could not find space of memory block " ++ pretty mem
+        noMemSize = fail $ "createValue: could not find size of memory block " ++ pretty mem
+
+entryPointOutput :: EntryPointValue -> CompilerM op s PyExp
+entryPointOutput (ScalarValue _ name) =
+  return $ Var $ pretty name
+entryPointOutput (ArrayValue mem _ Imp.DefaultSpace bt dims) = do
+  let cast = Cast (Var $ pretty mem) (compilePrimType bt)
+  return $ simpleCall "createArray" [cast, Tuple $ map compileDim dims]
+entryPointOutput (ArrayValue mem _ (Imp.Space sid) bt dims) = do
+  pack_output <- asks envEntryOutput
+  pack_output mem sid bt dims
+
+entryPointInput :: EntryPointValue -> PyExp -> CompilerM op s ()
+entryPointInput (ScalarValue bt name) e = do
+  let vname' = Var $ pretty name
+      npobject = compilePrimToNp bt
+      call = simpleCall npobject [e]
   stm $ Assign vname' call
+entryPointInput (ArrayValue mem memsize Imp.DefaultSpace _ dims) e = do
+  zipWithM_ (unpackDim e) dims [0..]
+  let dest = Var $ pretty mem
+      unwrap_call = simpleCall "unwrapArray" [e]
 
-packArg memsizes spacemap (Imp.ArrayValue vname bt dims) = do
-  zipWithM_ (unpackDim vname) dims [0..]
-  let src_size = Var $ pretty vname ++ ".nbytes"
-  let makeNumpy = simpleCall "int32" [src_size]
-  let src_data = Var $ pretty vname
-  let unwrap_call = simpleCall "unwrapArray" [Var $ pretty vname]
+  case memsize of
+    Imp.VarSize sizevar ->
+      stm $ Assign (Var $ pretty sizevar) $
+      simpleCall "np.int32" [Field e "nbytes"]
+    Imp.ConstSize _ ->
+      return ()
 
-  sizevar <- case HM.lookup vname memsizes of
-    Nothing -> error "Param name does not exist in array declarations"
-    Just sizevar -> do stm $ Assign (Var $ pretty sizevar) makeNumpy
-                       return sizevar
+  stm $ Assign dest unwrap_call
 
-  case HM.lookup vname spacemap of
-    Just (Imp.Space space) -> do copy <- asks envCopy
-                                 alloc <- asks envAllocate
-                                 name <- newVName $ baseString vname <> "_" <> space
-                                 alloc name (Var $ pretty sizevar) space
-                                 copy
-                                   name (Constant $ value (0 :: Int32)) (Imp.Space $ pretty space)
-                                   vname (Constant $ value (0 :: Int32)) Imp.DefaultSpace src_size bt
-                                 stm $ Assign src_data (Var $ pretty name)
+entryPointInput (ArrayValue mem memsize (Imp.Space sid) bt dims) e = do
+  unpack_input <- asks envEntryInput
+  unpack_input mem memsize sid bt dims e
 
-    Just Imp.DefaultSpace -> stm $ Assign src_data unwrap_call
-    Nothing -> error "Space is not set correctly"
+extValueDeclName :: Imp.ValueDecl -> String
+extValueDeclName = extName . valueDeclName
 
-unpackOutput :: HM.HashMap VName VName -> HM.HashMap VName Imp.Space -> Imp.ValueDecl -> CompilerM op s ()
-unpackOutput _ _ (Imp.ScalarValue _ vname) = do
-  let vname' = Var $ pretty vname
-  let newbt = asscalar vname'
-  stm $ Assign vname' newbt
-
-unpackOutput sizeHash spacemap (Imp.ArrayValue vname bt dims) = do
-  let cast = Cast (Var $ pretty vname) (compilePrimType bt)
-  let funCall = simpleCall "createArray" [cast, Tuple $ map compileDim dims]
-  let dest = Var $ pretty vname
-
-  let size = case HM.lookup vname sizeHash of
-               Nothing -> error "Couldn't find memparam in size hash"
-               Just s -> pretty s
-
-
-  case HM.lookup vname spacemap of
-    Just (Imp.Space space) -> do copy <- asks envCopy
-                                 name <- newVName $ baseString vname <> "_" <> space
-                                 let name' = Var $ pretty name
-                                 let bt'' = compilePrimType bt
-                                 let emptyArray = Call "empty"
-                                                  [Arg $ Tuple $ map compileDim dims,
-                                                   ArgKeyword "dtype" (Var bt'')]
-                                 stm $ Assign name' emptyArray
-                                 copy
-                                   name (Constant $ value (0::Int32)) Imp.DefaultSpace
-                                   vname (Constant $ value (0::Int32)) (Space $ pretty space) (Var size)
-                                   bt
-                                 stm $ Assign (Var $ pretty vname) name'
-    Just Imp.DefaultSpace -> stm $ Assign dest funCall
-    Nothing -> error "Space is not set correctly"
+extName :: String -> String
+extName = (++"_ext")
 
 valueDeclName :: Imp.ValueDecl -> String
 valueDeclName (Imp.ScalarValue _ vname) = pretty vname
@@ -362,116 +418,163 @@ readerElem bt = case bt of
   FloatType Float64 -> "read_double_signed"
   IntType{}         -> "read_int"
   Bool              -> "read_bool"
-  Char              -> "read_char"
   Cert              -> error "Cert is never used. ReaderElem doesn't handle this"
 
---since all constants are numpy types, we would sometimes like to use python types, and this function allows us to convert to python.
-asscalar :: PyExp -> PyExp
-asscalar (Constant v) = Constant v
-asscalar (Call "int32" [Arg (Constant v)]) = Constant v
-asscalar (Call "float32" [Arg (Constant v)]) = Constant v
-asscalar (Call "float64" [Arg (Constant v)]) = Constant v
-asscalar (Call "bool_" [Arg (Constant v)]) = Constant v
-asscalar (Call "uint8" [Arg (Constant v)]) = Constant v
-asscalar e = simpleCall "asscalar" [e]
-
 readInput :: Imp.ValueDecl -> PyStmt
-readInput (Imp.ScalarValue bt vname) =
-  let name = Var $ pretty vname
-      reader' = readerElem bt
+readInput decl@(Imp.ScalarValue bt _) =
+  let reader' = readerElem bt
       stdin = Var "sys.stdin"
-  in Assign name $ simpleCall reader' [stdin]
+  in Assign (Var $ extValueDeclName decl) $ simpleCall reader' [stdin]
 
-readInput (Imp.ArrayValue vname bt dims) =
-  let vname' = Var $ pretty vname
-      rank' = Var $ show $ length dims
+readInput decl@(Imp.ArrayValue _ bt dims) =
+  let rank' = Var $ show $ length dims
       reader' = Var $ readerElem bt
       bt' = Var $ compilePrimType bt
       stdin = Var "sys.stdin"
-  in Assign vname' $ simpleCall "read_array" [stdin, reader', rank', bt']
+  in Assign (Var $ extValueDeclName decl) $ simpleCall "read_array" [stdin, reader', rank', bt']
 
-writeOutput :: Imp.ValueDecl -> PyStmt
-writeOutput (Imp.ScalarValue bt vname) =
-  let name = Var $ pretty vname
-  in case bt of
-    FloatType Float32 -> Exp $ simpleCall "print"
-                         [BinaryOp "%" (StringLiteral "%ff32") name]
-    FloatType Float64 -> Exp $ simpleCall "print"
-                         [BinaryOp "%" (StringLiteral "%ff64") name]
-    IntType Int8 -> Exp $ simpleCall "print"
-                    [BinaryOp "%" (StringLiteral "%di8") name]
-    IntType Int16 -> Exp $ simpleCall "print"
-                     [BinaryOp "%" (StringLiteral "%di16") name]
-    IntType Int32 -> Exp $ simpleCall "print"
-                     [BinaryOp "%" (StringLiteral "%di32") name]
-    IntType Int64 -> Exp $ simpleCall "print"
-                     [BinaryOp "%" (StringLiteral "%di64") name]
-    Char -> Exp $ simpleCall "print" [Field name ".decode()"]
-    _ -> Exp $ simpleCall "print" [name]
+printPrimStm :: PyExp -> PrimType -> PyStmt
+printPrimStm val t =
+  case t of
+    IntType Int8 -> p "%di8"
+    IntType Int16 -> p "%di16"
+    IntType Int32 -> p "%di32"
+    IntType Int64 -> p "%di64"
+    Bool -> If val
+      [Exp $ simpleCall "sys.stdout.write" [StringLiteral "True"]]
+      [Exp $ simpleCall "sys.stdout.write" [StringLiteral "False"]]
+    Cert -> Exp $ simpleCall "sys.stdout.write" [StringLiteral "Checked"]
+    FloatType Float32 -> p "%.6ff32"
+    FloatType Float64 -> p "%.6ff64"
+  where p s =
+          Exp $ simpleCall "sys.stdout.write"
+          [BinOp "%" (StringLiteral s) val]
 
-writeOutput (Imp.ArrayValue vname bt _) =
-  let name = Var $ pretty vname
-      bt' = StringLiteral $ pretty bt
-      stdout = Var "sys.stdout"
-  in case bt of
-    Char -> Exp $ simpleCall "write_chars" [stdout, name]
-    _ -> Exp $ simpleCall "write_array" [stdout, name, bt']
+printStm :: EntryPointValue -> PyExp -> CompilerM op s PyStmt
+printStm (ScalarValue bt _) e =
+  return $ printPrimStm e bt
+printStm (ArrayValue _ _ _ bt []) e =
+  return $ printPrimStm e bt
+printStm (ArrayValue mem memsize space bt (outer:shape)) e = do
+  v <- newVName "print_elem"
+  first <- newVName "print_first"
+  let size = simpleCall "np.product" [List $ map compileDim $ outer:shape]
+      emptystr = "empty(" ++ ppArrayType bt (length shape) ++ ")"
+  printelem <- printStm (ArrayValue mem memsize space bt shape) $ Var $ pretty v
+  return $ If (BinOp "==" size (Constant (value (0::Int32))))
+    [puts emptystr]
+    [Assign (Var $ pretty first) $ Var "True",
+     puts "[",
+     For (pretty v) e [
+        If (simpleCall "not" [Var $ pretty first])
+        [puts ", "] [],
+        printelem,
+        Assign (Var $ pretty first) $ Var "False"
+    ],
+    puts "]"]
+    where ppArrayType :: PrimType -> Int -> String
+          ppArrayType t 0 = pretty t
+          ppArrayType t n = "[" ++ ppArrayType t (n-1) ++ "]"
 
-compileEntryFun :: [PyStmt] -> [Option] -> (Name, Imp.Function op)
-                -> CompilerM op s (PyFunc, PyStmt)
-compileEntryFun pre_timing options (fname, Imp.Function outputs inputs _ decl_outputs decl_args) = do
+          puts s = Exp $ simpleCall "sys.stdout.write" [StringLiteral s]
+
+printValue :: [(EntryPointValue, PyExp)] -> CompilerM op s [PyStmt]
+printValue = fmap concat . mapM (uncurry printValue')
+  -- We copy non-host arrays to the host before printing.  This is
+  -- done in a hacky way - we assume the value has a .get()-method
+  -- that returns an equivalent Numpy array.  This works for PyOpenCL,
+  -- but we will probably need yet another plugin mechanism here in
+  -- the future.
+  where printValue' (ArrayValue mem memsize (Space _) bt shape) e =
+          printValue' (ArrayValue mem memsize DefaultSpace bt shape) $
+          simpleCall (pretty e ++ ".get") []
+        printValue' r e = do
+          p <- printStm r e
+          return [p, Exp $ simpleCall "sys.stdout.write" [StringLiteral "\n"]]
+
+prepareEntry :: (Name, Imp.Function op)
+             -> CompilerM op s
+                (String, [String], [PyStmt], [PyStmt], [PyStmt],
+                 [(EntryPointValue, PyExp)])
+prepareEntry (fname, Imp.Function _ outputs inputs _ decl_outputs decl_args) = do
   let output_paramNames = map (pretty . Imp.paramName) outputs
-  let funName = pretty fname
-  let funTuple = tupleOrSingle $ fmap Var output_paramNames
-  let ret = Return $ tupleOrSingle $ map (Var . valueDeclName) decl_outputs
-  let hashSizeInput = hashSizeVars inputs
-  let hashSizeOutput = hashSizeVars outputs
-  let hashSpaceInput = hashSpace inputs
-  let hashSpaceOutput = hashSpace outputs
+      funTuple = tupleOrSingle $ fmap Var output_paramNames
+      hashSizeInput = hashSizeVars inputs
+      hashSizeOutput = hashSizeVars outputs
+      hashSpaceInput = hashSpace inputs
+      hashSpaceOutput = hashSpace outputs
 
-  prepareIn <- collect $ mapM_ (packArg hashSizeInput hashSpaceInput) decl_args
-  prepareOut <- collect $ mapM_ (unpackOutput hashSizeOutput hashSpaceOutput) decl_outputs
+  args <- mapM (createValue hashSizeInput hashSpaceInput) decl_args
+  prepareIn <- collect $ zipWithM_ entryPointInput args $
+               map (Var . extValueDeclName) decl_args
+  results <- mapM (createValue hashSizeOutput hashSpaceOutput) decl_outputs
+  (res, prepareOut) <- collect' $ mapM entryPointOutput results
 
   let inputArgs = map (pretty . Imp.paramName) inputs
-  let funCall = simpleCall ('_' : (futharkFun . pretty $ fname)) (fmap Var inputArgs)
-  let body' = prepareIn ++ [Assign funTuple funCall] ++ prepareOut
+      fname' = "self." ++ futharkFun (nameToString fname)
+      funCall = simpleCall fname' (fmap Var inputArgs)
+      call = [Assign funTuple funCall]
+
+  return (nameToString fname, map extValueDeclName decl_args,
+          prepareIn, call, prepareOut,
+          zip results res)
+
+compileEntryFun :: (Name, Imp.Function op)
+                -> CompilerM op s PyFunDef
+compileEntryFun entry = do
+  (fname', params, prepareIn, body, prepareOut, res) <- prepareEntry entry
+  let ret = Return $ tupleOrSingle $ map snd res
+  return $ Def fname' ("self" : params) $
+    prepareIn ++ body ++ prepareOut ++ [ret]
+
+callEntryFun :: [PyStmt] -> [Option] -> (Name, Imp.Function op)
+             -> CompilerM op s [PyStmt]
+callEntryFun pre_timing options entry@(_, Imp.Function _ _ _ _ _ decl_args) = do
+  (_, _, prepareIn, body, _, res) <- prepareEntry entry
+
   let str_input = map readInput decl_args
-  let str_output = map writeOutput decl_outputs
-  let decl_output_names = tupleOrSingle $ fmap Var (map valueDeclName decl_outputs)
-  let decl_input_names = fmap Var (map valueDeclName decl_args)
 
-  let callmain = simpleCall "main" decl_input_names
-  let exitcall = [Exp $ simpleCall "sys.exit" [Field (StringLiteral "Assertion.{} failed") "format(e)"]]
-  let except' = Catch (Var "AssertionError") exitcall
-  let main_with_timing =
-        addTiming $ Assign decl_output_names callmain : pre_timing
-  let trys = Try main_with_timing [except']
-  let iff = If (BinaryOp "==" (Var "__name__") (StringLiteral "__main__"))
-            (parse_options ++ str_input ++ [trys] ++ str_output)
-            []
+      exitcall = [Exp $ simpleCall "sys.exit" [Field (StringLiteral "Assertion.{} failed") "format(e)"]]
+      except' = Catch (Var "AssertionError") exitcall
+      do_run = body ++ pre_timing
+      (do_run_with_timing, close_runtime_file) = addTiming do_run
 
-  return (PyFunc funName (map valueDeclName decl_args) (body'++[ret]),
-          iff)
+      do_warmup_run =
+        If (Var "do_warmup_run") do_run []
+
+      do_num_runs =
+        For "i" (simpleCall "range" [simpleCall "int" [Var "num_runs"]])
+        do_run_with_timing
+
+  str_output <- printValue res
+
+  return $ parse_options ++ str_input ++ prepareIn ++
+    [Try [do_warmup_run, do_num_runs] [except']] ++
+    [close_runtime_file] ++
+    str_output
   where parse_options =
           Assign (Var "runtime_file") None :
-          generateOptionParser (timingOption : options)
+          Assign (Var "do_warmup_run") (Constant $ value False) :
+          Assign (Var "num_runs") (Constant $ value (1::Int32)) :
+          generateOptionParser (standardOptions ++ options)
 
-addTiming :: [PyStmt] -> [PyStmt]
+addTiming :: [PyStmt] -> ([PyStmt], PyStmt)
 addTiming statements =
-    [ Assign (Var "time_start") $ Call "time.time" [] ] ++
-    statements ++
-    [ Assign (Var "time_end") $ Call "time.time" []
-    , If (Var "runtime_file") print_runtime [] ]
+  ([ Assign (Var "time_start") $ Call "time.time" [] ] ++
+   statements ++
+   [ Assign (Var "time_end") $ Call "time.time" []
+   , If (Var "runtime_file") print_runtime [] ],
+
+   If (Var "runtime_file") [Exp $ simpleCall "runtime_file.close" []] [])
   where print_runtime =
           [Exp $ simpleCall "runtime_file.write"
            [simpleCall "str"
-            [BinaryOp "-"
+            [BinOp "-"
              (toMicroseconds (Var "time_end"))
              (toMicroseconds (Var "time_start"))]],
-           Exp $ simpleCall "runtime_file.write" [StringLiteral "\n"],
-           Exp $ simpleCall "runtime_file.close" []]
+           Exp $ simpleCall "runtime_file.write" [StringLiteral "\n"]]
         toMicroseconds x =
-          simpleCall "int" [BinaryOp "*" x $ Constant $ value (1000000::Int32)]
+          simpleCall "int" [BinOp "*" x $ Constant $ value (1000000::Int32)]
 
 compileUnOp :: Imp.UnOp -> String
 compileUnOp op =
@@ -483,11 +586,71 @@ compileUnOp op =
     SSignum{} -> "ssignum"
     USignum{} -> "usignum"
 
-compileBinOp :: BinOp -> Imp.Exp -> Imp.Exp -> CompilerM op s PyExp
-compileBinOp op x y = do
+compileBinOpLike :: Monad m =>
+                    Imp.Exp -> Imp.Exp
+                 -> CompilerM op s (PyExp, PyExp, String -> m PyExp)
+compileBinOpLike x y = do
   x' <- compileExp x
   y' <- compileExp y
-  let simple s = return $ BinaryOp s x' y'
+  let simple s = return $ BinOp s x' y'
+  return (x', y', simple)
+
+compileSizeOfType :: PrimType -> String
+compileSizeOfType t =
+  case t of
+    IntType Int8 -> "1"
+    IntType Int16 -> "2"
+    IntType Int32 -> "4"
+    IntType Int64 -> "8"
+    FloatType Float32 -> "4"
+    FloatType Float64 -> "8"
+    Bool -> "1"
+    Cert -> "1"
+
+compilePrimType :: PrimType -> String
+compilePrimType t =
+  case t of
+    IntType Int8 -> "ct.c_int8"
+    IntType Int16 -> "ct.c_int16"
+    IntType Int32 -> "ct.c_int32"
+    IntType Int64 -> "ct.c_int64"
+    FloatType Float32 -> "ct.c_float"
+    FloatType Float64 -> "ct.c_double"
+    Bool -> "ct.c_bool"
+    Cert -> "ct.c_bool"
+
+compilePrimToNp :: Imp.PrimType -> String
+compilePrimToNp bt =
+  case bt of
+    IntType Int8 -> "np.int8"
+    IntType Int16 -> "np.int16"
+    IntType Int32 -> "np.int32"
+    IntType Int64 -> "np.int64"
+    FloatType Float32 -> "np.float32"
+    FloatType Float64 -> "np.float64"
+    Bool -> "np.byte"
+    Cert -> "np.byte"
+
+compilePrimValue :: Imp.PrimValue -> PyExp
+compilePrimValue (IntValue (Int8Value v)) = Constant $ value v
+compilePrimValue (IntValue (Int16Value v)) = Constant $ value v
+compilePrimValue (IntValue (Int32Value v)) = Constant $ value v
+compilePrimValue (IntValue (Int64Value v)) = Constant $ value v
+compilePrimValue (FloatValue (Float32Value v)) = Constant $ value v
+compilePrimValue (FloatValue (Float64Value v)) = Constant $ value v
+compilePrimValue (BoolValue v) = simpleCall "bool" [Constant $ BoolValue v]
+compilePrimValue Checked = Var "Cert"
+
+compileExp :: Imp.Exp -> CompilerM op s PyExp
+
+-- Had to explicitly declare each constant value because memmove
+-- typeclashes with python types and numpy types
+compileExp (Imp.Constant v) = return $ compilePrimValue v
+
+compileExp (Imp.ScalarVar vname) = return (Var $ pretty vname)
+
+compileExp (Imp.BinOp op x y) = do
+  (x', y', simple) <- compileBinOpLike x y
   case op of
     Add{} -> simple "+"
     Sub{} -> simple "-"
@@ -504,75 +667,12 @@ compileBinOp op x y = do
     LogOr{} -> simple "or"
     _ -> return $ simpleCall (pretty op) [x', y']
 
-compileSizeOfType :: PrimType -> String
-compileSizeOfType t =
-  case t of
-    IntType Int8 -> "1"
-    IntType Int16 -> "2"
-    IntType Int32 -> "4"
-    IntType Int64 -> "8"
-    Char -> "1"
-    FloatType Float32 -> "4"
-    FloatType Float64 -> "8"
-    Bool -> "1"
-    Cert -> "1"
-
-compilePrimType :: PrimType -> String
-compilePrimType t =
-  case t of
-    IntType Int8 -> "c_int8"
-    IntType Int16 -> "c_int16"
-    IntType Int32 -> "c_int32"
-    IntType Int64 -> "c_int64"
-    Char -> "c_char"
-    FloatType Float32 -> "c_float"
-    FloatType Float64 -> "c_double"
-    Bool -> "c_bool"
-    Cert -> "c_byte"
-
-compilePrimToNp :: Imp.PrimType -> String
-compilePrimToNp bt =
-  case bt of
-    IntType Int8 -> "int8"
-    IntType Int16 -> "int16"
-    IntType Int32 -> "int32"
-    IntType Int64 -> "int64"
-    Char -> "uint8"
-    FloatType Float32 -> "float32"
-    FloatType Float64 -> "float64"
-    Bool -> "bool_"
-    Cert -> "int8"
-
-compilePrimValue :: Imp.PrimValue -> PyExp
-compilePrimValue (IntValue (Int8Value v)) = simpleCall "int8" [Constant $ value v]
-compilePrimValue (IntValue (Int16Value v)) = simpleCall "int16" [Constant $ value v]
-compilePrimValue (IntValue (Int32Value v)) = simpleCall "int32" [Constant $ value v]
-compilePrimValue (IntValue (Int64Value v)) = simpleCall "int64" [Constant $ value v]
-compilePrimValue (FloatValue (Float32Value v)) = simpleCall "float32" [Constant $ value v]
-compilePrimValue (FloatValue (Float64Value v)) = simpleCall "float64" [Constant $ value v]
-compilePrimValue (BoolValue v) = simpleCall "bool_" [Constant $ BoolValue v]
-compilePrimValue (CharValue v) = Constant $ CharValue v
-compilePrimValue Checked = Var "Cert"
-
-compileExp :: Imp.Exp -> CompilerM op s PyExp
-
--- Had to explicitly declare each constant value because memmove
--- typeclashes with python types and numpy types
-compileExp (Imp.Constant v) = return $ compilePrimValue v
-
-compileExp (Imp.ScalarVar vname) = return (Var $ pretty vname)
-
-compileExp (Imp.BinOp op exp1 exp2) =
-  compileBinOp op exp1 exp2
-
 compileExp (Imp.ConvOp conv x) = do
   x' <- compileExp x
   return $ simpleCall (pretty conv) [x']
 
 compileExp (Imp.CmpOp cmp x y) = do
-  x' <- compileExp x
-  y' <- compileExp y
-  let simple s = return $ BinaryOp s x' y'
+  (x', y', simple) <- compileBinOpLike x y
   case cmp of
     CmpEq{} -> simple "=="
     FCmpLt{} -> simple "<"
@@ -607,11 +707,8 @@ compileExp (Imp.Index src (Imp.Count iexp) restype (Imp.Space space)) =
 
 compileCode :: Imp.Code op -> CompilerM op s ()
 
-compileCode (Imp.Op op) = do
-  opc <- asks envOpCompiler
-  res <- opc op
-  case res of Done             -> return ()
-              CompileCode code -> compileCode code
+compileCode (Imp.Op op) =
+  join $ asks envOpCompiler <*> pure op
 
 compileCode (Imp.If cond tb fb) = do
   cond' <- compileExp cond
@@ -632,7 +729,12 @@ compileCode (Imp.For i bound body) = do
   bound' <- compileExp bound
   let i' = pretty i
   body' <- collect $ compileCode body
-  stm $ For i' (simpleCall "range" [bound']) (Assign (Var i') (simpleCall "int32" [Var i']) : body')
+  counter <- pretty <$> newVName "counter"
+  one <- pretty <$> newVName "one"
+  stm $ Assign (Var i') $ Constant $ value (0::Int32)
+  stm $ Assign (Var one) $ Constant $ value (1::Int32)
+  stm $ For counter (simpleCall "range" [bound']) $
+    body' ++ [AssignOp "+" (Var i') (Var one)]
 
 compileCode (Imp.SetScalar vname exp1) = do
   let name' = Var $ pretty vname
@@ -653,10 +755,13 @@ compileCode (Imp.Assert e loc) = do
 compileCode (Imp.Call dests fname args) = do
   args' <- mapM compileExp args
   let dests' = tupleOrSingle $ fmap Var (map pretty dests)
-  let call' = simpleCall (futharkFun . pretty $ fname) args'
+      fname'
+        | isBuiltInFunction fname = futharkFun (pretty  fname)
+        | otherwise               = "self." ++ futharkFun (pretty  fname)
+      call' = simpleCall fname' args'
   stm $ Assign dests' call'
 
-compileCode (Imp.SetMem dest src) = do
+compileCode (Imp.SetMem dest src _) = do
   let src' = Var (pretty src)
   let dest' = Var (pretty dest)
   stm $ Assign dest' src'
@@ -679,9 +784,9 @@ compileCode (Imp.Copy dest (Imp.Count destoffset) DefaultSpace src (Imp.Count sr
   let dest' = Var (pretty dest)
   let src' = Var (pretty src)
   size' <- compileExp size
-  let offset_call1 = simpleCall "addressOffset" [dest', destoffset', Var "c_byte"]
-  let offset_call2 = simpleCall "addressOffset" [src', srcoffset', Var "c_byte"]
-  stm $ Exp $ simpleCall "memmove" [offset_call1, offset_call2, size']
+  let offset_call1 = simpleCall "addressOffset" [dest', destoffset', Var "ct.c_byte"]
+  let offset_call2 = simpleCall "addressOffset" [src', srcoffset', Var "ct.c_byte"]
+  stm $ Exp $ simpleCall "ct.memmove" [offset_call1, offset_call2, size']
 
 compileCode (Imp.Copy dest (Imp.Count destoffset) destspace src (Imp.Count srcoffset) srcspace (Imp.Count size)) = do
   copy <- asks envCopy

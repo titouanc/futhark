@@ -9,23 +9,14 @@ import Control.Applicative
 import Prelude
 
 import Test.QuickCheck
-import Test.HUnit hiding (Test)
 import Test.Framework
-import Test.Framework.Providers.HUnit
-import qualified Data.HashMap.Lazy as HM
 
 import Language.Futhark.Syntax
-import Language.Futhark.Attributes
 
 import Futhark.Representation.PrimitiveTests()
 
 tests :: [Test]
-tests = testBuiltins
-
-testBuiltins :: [Test]
-testBuiltins = [ testCase (nameToString f ++ " is builtin") $
-                 isBuiltInFunction f @?= True
-                 | f <- HM.keys builtInFunctions ]
+tests = []
 
 instance Arbitrary BinOp where
   arbitrary = elements [minBound..maxBound]
@@ -38,7 +29,6 @@ instance Arbitrary PrimType where
                     , Unsigned <$> arbitrary
                     , FloatType <$> arbitrary
                     , pure Bool
-                    , pure Char
                     ]
 
 instance Arbitrary PrimValue where
@@ -46,5 +36,4 @@ instance Arbitrary PrimValue where
                     , UnsignedValue <$> arbitrary
                     , FloatValue <$> arbitrary
                     , BoolValue <$> arbitrary
-                    , CharValue <$> arbitrary
                     ]

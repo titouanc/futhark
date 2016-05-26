@@ -86,15 +86,15 @@ inPlaceLowering = simplePass
                   "In-place lowering"
                   "Lower in-place updates into loops" $
                   fmap removeProgAliases .
-                  intraproceduralTransformation optimiseFunDec .
+                  intraproceduralTransformation optimiseFunDef .
                   aliasAnalysis
 
-optimiseFunDec :: MonadFreshNames m => FunDec Kernels -> m (FunDec Kernels)
-optimiseFunDec fundec =
+optimiseFunDef :: MonadFreshNames m => FunDef Kernels -> m (FunDef Kernels)
+optimiseFunDef fundec =
   modifyNameSource $ runForwardingM $
-  bindingFParams (funDecParams fundec) $ do
-    body <- optimiseBody $ funDecBody fundec
-    return $ fundec { funDecBody = body }
+  bindingFParams (funDefParams fundec) $ do
+    body <- optimiseBody $ funDefBody fundec
+    return $ fundec { funDefBody = body }
 
 optimiseBody :: Body Kernels -> ForwardingM (Body Kernels)
 optimiseBody (Body als bnds res) = do
@@ -270,11 +270,8 @@ deepen = local $ \env -> env { topDownDepth = topDownDepth env + 1 }
 areAvailableBefore :: [SubExp] -> VName -> ForwardingM Bool
 areAvailableBefore ses point = do
   pointN <- bindingNumber point
-  nameNs <- mapM bindingNumber names
+  nameNs <- mapM bindingNumber $ subExpVars ses
   return $ all (< pointN) nameNs
-  where names = mapMaybe isVar ses
-        isVar (Var v)    = Just v
-        isVar Constant{} = Nothing
 
 isInCurrentBody :: VName -> ForwardingM Bool
 isInCurrentBody name = do
@@ -314,7 +311,7 @@ maybeForward v dest_nm dest_attr cs src i = do
   samebody <- isInCurrentBody v
   -- Check condition (6)
   optimisable <- isOptimisable v
-  not_prim <- not <$> primType <$> lookupType v
+  not_prim <- not . primType <$> lookupType v
   if available && certs_available && samebody && optimisable && not_prim then do
     let fwd = DesiredUpdate dest_nm dest_attr cs src [i] v
     tell mempty { forwardThese = [fwd] }

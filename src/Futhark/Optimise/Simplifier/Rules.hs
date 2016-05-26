@@ -33,6 +33,7 @@ import qualified Futhark.Analysis.ScalExp as SE
 import Futhark.Representation.AST
 import Futhark.Construct
 import Futhark.Transform.Substitute
+import Futhark.Util
 
 import Prelude hiding (all)
 
@@ -471,14 +472,14 @@ simplifyIndexing defOf seType idd inds consuming =
 
     Just (SubExp (Var v)) -> Just $ IndexResult [] v inds
 
-    Just (Iota _ (Constant (IntValue (Int32Value 0))))
+    Just (Iota _ (Constant (IntValue (Int32Value 0))) (Constant (IntValue (Int32Value 1))))
       | [ii] <- inds ->
           Just $ SubExpResult ii
 
-    Just (Iota _ x)
+    Just (Iota _ x s)
       | [ii] <- inds ->
           Just $ ScalExpResult $
-          SE.intSubExpToScalExp ii + SE.intSubExpToScalExp x
+          SE.intSubExpToScalExp ii * SE.intSubExpToScalExp s + SE.intSubExpToScalExp x
 
     Just (Index cs aa ais) ->
       Just $ IndexResult cs aa (ais ++ inds)
@@ -522,6 +523,14 @@ simplifyIndexing defOf seType idd inds consuming =
     Just (Reshape cs [_] v2)
       | Just [_] <- arrayDims <$> seType (Var v2) ->
         Just $ IndexResult cs v2 inds
+
+    Just (ArrayLit ses _)
+      | Constant (IntValue (Int32Value i)) : inds' <- inds,
+        Just se <- maybeNth i ses ->
+        case inds' of
+          [] -> Just $ SubExpResult se
+          _ | Var v2 <- se  -> Just $ IndexResult [] v2 inds'
+          _ -> Nothing
 
     _ -> Nothing
 
@@ -624,8 +633,7 @@ simplifyBoolBranch _ (Let pat _ (If cond tb fb ts))
   | Body _ [] [tres] <- tb,
     Body _ [] [fres] <- fb,
     patternSize pat == length ts,
-    all (==Prim Bool) ts,
-    False = do -- FIXME: disable because algebraic optimiser cannot handle it.
+    all (==Prim Bool) ts = do
   e <- eBinOp LogOr (pure $ PrimOp $ BinOp LogAnd cond tres)
                     (eBinOp LogAnd (pure $ PrimOp $ UnOp Not cond)
                      (pure $ PrimOp $ SubExp fres))

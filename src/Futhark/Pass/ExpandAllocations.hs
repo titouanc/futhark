@@ -21,19 +21,19 @@ import Futhark.Representation.ExplicitMemory
 import Futhark.Tools
 import Futhark.Util
 import Futhark.Pass
-import qualified Futhark.Representation.ExplicitMemory.IndexFunction.Unsafe as IxFun
+import qualified Futhark.Representation.ExplicitMemory.IndexFunction as IxFun
 
 expandAllocations :: Pass ExplicitMemory ExplicitMemory
 expandAllocations = simplePass
                     "expand allocations"
                     "Expand allocations" $
-                    intraproceduralTransformation transformFunDec
+                    intraproceduralTransformation transformFunDef
 
-transformFunDec :: MonadFreshNames m => FunDec -> m FunDec
-transformFunDec fundec = do
+transformFunDef :: MonadFreshNames m => FunDef -> m FunDef
+transformFunDef fundec = do
   body' <- modifyNameSource $ runState m
-  return fundec { funDecBody = body' }
-  where m = transformBody $ funDecBody fundec
+  return fundec { funDefBody = body' }
+  where m = transformBody $ funDefBody fundec
 
 type ExpandM = State VNameSource
 
@@ -69,7 +69,7 @@ transformExp (Op (Inner (ChunkedMapKernel cs w kernel_size ordering lam arrs)))
       extractKernelAllocations bound_in_lam $ lambdaBody lam = do
 
   (alloc_bnds, alloc_offsets) <-
-    expandedAllocations num_threads (lambdaIndex lam) lam_thread_allocs
+    expandedAllocations num_threads thread_id lam_thread_allocs
 
   let lam_body'' = offsetMemoryInBody alloc_offsets lam_body'
       lam' = lam { lambdaBody = lam_body'' }
@@ -77,8 +77,9 @@ transformExp (Op (Inner (ChunkedMapKernel cs w kernel_size ordering lam arrs)))
           Op $ Inner $ ChunkedMapKernel cs w kernel_size ordering lam' arrs)
   where num_threads = kernelNumThreads kernel_size
         bound_in_lam = HS.fromList $ HM.keys $ scopeOf lam
+        (thread_id, _, _) = partitionChunkedKernelLambdaParameters $ lambdaParams lam
 
-transformExp (Op (Inner (ReduceKernel cs w kernel_size comm red_lam fold_lam nes arrs)))
+transformExp (Op (Inner (ReduceKernel cs w kernel_size comm red_lam fold_lam arrs)))
   -- Extract allocations from the lambdas.
   | Right (red_lam_body', red_lam_thread_allocs) <-
       extractKernelAllocations bound_in_red_lam $ lambdaBody red_lam,
@@ -86,36 +87,49 @@ transformExp (Op (Inner (ReduceKernel cs w kernel_size comm red_lam fold_lam nes
       extractKernelAllocations bound_in_fold_lam $ lambdaBody fold_lam = do
 
   (red_alloc_bnds, red_alloc_offsets) <-
-    expandedAllocations num_threads (lambdaIndex red_lam) red_lam_thread_allocs
+    expandedAllocations num_threads red_id red_lam_thread_allocs
   (fold_alloc_bnds, fold_alloc_offsets) <-
-    expandedAllocations num_threads (lambdaIndex fold_lam) fold_lam_thread_allocs
+    expandedAllocations num_threads fold_id fold_lam_thread_allocs
 
   let red_lam_body'' = offsetMemoryInBody red_alloc_offsets red_lam_body'
       fold_lam_body'' = offsetMemoryInBody fold_alloc_offsets fold_lam_body'
       red_lam' = red_lam { lambdaBody = red_lam_body'' }
       fold_lam' = fold_lam { lambdaBody = fold_lam_body'' }
   return (red_alloc_bnds <> fold_alloc_bnds,
-          Op $ Inner $ ReduceKernel cs w kernel_size comm red_lam' fold_lam' nes arrs)
+          Op $ Inner $ ReduceKernel cs w kernel_size comm red_lam' fold_lam' arrs)
   where num_threads = kernelNumThreads kernel_size
+        (red_id, _, _) = partitionChunkedKernelLambdaParameters $ lambdaParams red_lam
+        (fold_id, _, _) = partitionChunkedKernelLambdaParameters $ lambdaParams fold_lam
 
         bound_in_red_lam = HS.fromList $ HM.keys $ scopeOf red_lam
         bound_in_fold_lam = HS.fromList $ HM.keys $ scopeOf fold_lam
 
-transformExp (Op (Inner (ScanKernel cs w kernel_size order lam input)))
+transformExp (Op (Inner (ScanKernel cs w kernel_size lam foldlam nes arrs)))
   -- Extract allocations from the lambda.
   | Right (lam_body', lam_thread_allocs) <-
-      extractKernelAllocations bound_in_lam $ lambdaBody lam = do
+      extractKernelAllocations bound_in_lam $ lambdaBody lam,
+   Right (foldlam_body', foldlam_thread_allocs) <-
+      extractKernelAllocations bound_in_foldlam $ lambdaBody foldlam = do
 
   (alloc_bnds, alloc_offsets) <-
-    expandedAllocations num_threads (lambdaIndex lam) lam_thread_allocs
+    expandedAllocations num_threads thread_id lam_thread_allocs
+  (fold_alloc_bnds, fold_alloc_offsets) <-
+    expandedAllocations num_threads fold_thread_id foldlam_thread_allocs
 
   let lam_body'' = offsetMemoryInBody alloc_offsets lam_body'
       lam' = lam { lambdaBody = lam_body'' }
-  return (alloc_bnds,
-          Op $ Inner $ ScanKernel cs w kernel_size order lam' input)
+      foldlam_body'' = offsetMemoryInBody fold_alloc_offsets foldlam_body'
+      foldlam' = foldlam { lambdaBody = foldlam_body'' }
+  return (alloc_bnds <> fold_alloc_bnds,
+          Op $ Inner $ ScanKernel cs w kernel_size lam' foldlam' nes arrs)
   where num_threads = kernelNumThreads kernel_size
+        (thread_id, _, _) =
+          partitionChunkedKernelLambdaParameters $ lambdaParams lam
+        (fold_thread_id, _, _) =
+          partitionChunkedKernelLambdaParameters $ lambdaParams foldlam
 
         bound_in_lam = HS.fromList $ HM.keys $ scopeOf lam
+        bound_in_foldlam = HS.fromList $ HM.keys $ scopeOf foldlam
 
 transformExp e =
   return ([], e)
@@ -178,13 +192,13 @@ expandedAllocations num_threads thread_index thread_allocs = do
           in offset_ixfun
 
 data RebaseMap = RebaseMap {
-    rebaseMap :: HM.HashMap VName (IxFun.Shape -> IxFun.IxFun)
+    rebaseMap :: HM.HashMap VName ([SE.ScalExp] -> IxFun.IxFun SE.ScalExp)
     -- ^ A map from memory block names to new index function bases.
   , indexVariable :: VName
   , kernelWidth :: SubExp
   }
 
-lookupNewBase :: VName -> RebaseMap -> Maybe (IxFun.Shape -> IxFun.IxFun)
+lookupNewBase :: VName -> RebaseMap -> Maybe ([SE.ScalExp] -> IxFun.IxFun SE.ScalExp)
 lookupNewBase name = HM.lookup name . rebaseMap
 
 offsetMemoryInBody :: RebaseMap -> Body -> Body

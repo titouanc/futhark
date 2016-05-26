@@ -63,6 +63,7 @@
       <keyword>loop</keyword>
       <keyword>with</keyword>
       <keyword>fun</keyword>
+      <keyword>entry</keyword>
       <keyword>fn</keyword>
       <keyword>for</keyword>
       <keyword>while</keyword>
@@ -104,6 +105,8 @@
       <keyword>concat</keyword>
       <keyword>zip</keyword>
       <keyword>unzip</keyword>
+
+      <keyword>write</keyword>
     </context>
 
     <context id="operators" style-ref="operator" extend-parent="false">

@@ -10,7 +10,7 @@
 --   Redomap 0
 -- }
 
-fun [f64] take(int n, [f64] a) = let {first, rest} = unsafe split((n), a) in first
+fun [f64] take(int n, [f64] a) = let (first, rest) = unsafe split((n), a) in first
 
 fun [f64] fftmp(int num_paths, [[f64]] md_c, [f64] zi) =
     map( fn f64 (int j) =>
@@ -28,7 +28,7 @@ fun [f64] combineVs([f64] n_row, [f64] vol_row, [f64] dr_row) =
 fun [[f64,num_und],num_dates]
   mkPrices([f64,num_und] md_starts, [[f64,num_und],num_dates] md_vols,
 	   [[f64,num_und],num_dates] md_drifts, [[f64,num_und],num_dates] noises) =
-    let e_rows = map( fn [f64] ([f64] x) => map(exp, x),
+    let e_rows = map( fn [f64] ([f64] x) => map(exp64, x),
                       map(combineVs, zip(noises, md_vols, md_drifts))
                     )
     in  scan( fn [f64] ([f64] x, [f64] y) => map(*, zip(x, y)),

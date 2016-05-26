@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, FlexibleContexts, FlexibleInstances, MultiParamTypeClasses #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, FlexibleContexts, FlexibleInstances, MultiParamTypeClasses, TypeFamilies #-}
 -- | The type checker checks whether the program is type-consistent.
 module Futhark.TypeCheck
   ( -- * Interface
@@ -37,6 +37,7 @@ module Futhark.TypeCheck
   , checkFun'
   , checkLambdaParams
   , checkBody
+  , consume
   , consumeOnlyParams
   )
   where
@@ -130,8 +131,8 @@ instance Checkable lore => Show (ErrorCase lore) where
     pretty t ++ "."
   show (ReturnTypeError fname rettype bodytype) =
     "Declaration of function " ++ nameToString fname ++
-    " declares return type " ++ pretty rettype ++ ", but body has type " ++
-    pretty bodytype
+    " declares return type\n  " ++ prettyTuple rettype ++
+    "\nBut body has type\n  " ++ prettyTuple bodytype
   show (DupDefinitionError name) =
     "Duplicate definition of function " ++ nameToString name ++ ""
   show (DupParamError funname paramname) =
@@ -142,7 +143,7 @@ instance Checkable lore => Show (ErrorCase lore) where
     "Variable " ++ textual name ++ " bound twice in pattern."
   show (InvalidPatternError pat t desc) =
     "Pattern " ++ pretty pat ++
-    " cannot match value of type " ++ pretty t ++ end
+    " cannot match value of type " ++ prettyTuple t ++ end
     where end = case desc of Nothing -> "."
                              Just desc' -> ":\n" ++ desc'
   show (UnknownVariableError name) =
@@ -194,7 +195,6 @@ instance Checkable lore => Show (TypeError lore) where
 type FunBinding lore = (RetType lore, [FParam lore])
 
 data VarBinding lore = Bound (NameInfo (Aliases lore))
-                     | WasConsumed
 
 data Usage = Consumed
            | Observed
@@ -296,7 +296,6 @@ instance Checkable lore =>
   lookupType = fmap typeOf . lookupVar
   askScope = asks $ HM.fromList . mapMaybe varType . HM.toList . envVtable
     where varType (name, Bound attr) = Just (name, attr)
-          varType (_, WasConsumed) = Nothing
 
 runTypeM :: Env lore -> TypeM lore a
          -> Either (TypeError lore) a
@@ -376,8 +375,7 @@ consumeOnlyParams consumable m = do
   (x, os) <- collectOccurences m
   tell . Consumption =<< mapM inspect os
   return x
-  where inspect :: Occurence -> TypeM lore Occurence
-        inspect o = do
+  where inspect o = do
           new_consumed <- mconcat <$> mapM wasConsumed (HS.toList $ consumed o)
           return o { consumed = new_consumed }
         wasConsumed v
@@ -407,17 +405,19 @@ binding bnds = check . local (`bindVars` bnds)
         boundnames = HM.keys bnds
         boundnameset = HS.fromList boundnames
 
-        bindVar env name attr =
-          let names = expandAliases (aliases attr) env
-              inedges = HS.toList names
+        bindVar env name (LetInfo (Names' als, attr)) =
+          let als' = expandAliases als env
+              inedges = HS.toList als'
               update (Bound (LetInfo (Names' thesenames, thisattr))) =
                 Bound $ LetInfo (Names' $ HS.insert name thesenames, thisattr)
               update b = b
           in env { envVtable =
-                      HM.insert name (Bound attr) $
+                      HM.insert name (Bound $ LetInfo (Names' als', attr)) $
                       adjustSeveral update inedges $
                       envVtable env
                  }
+        bindVar env name attr =
+          env { envVtable = HM.insert name (Bound attr) $ envVtable env }
 
         adjustSeveral f = flip $ foldl $ flip $ HM.adjust f
 
@@ -439,7 +439,6 @@ lookupVar name = do
   case bnd of
     Nothing -> bad $ UnknownVariableError name
     Just (Bound attr) -> return attr
-    Just WasConsumed  -> bad $ UseAfterConsume name
 
 lookupAliases :: VName -> TypeM lore Names
 lookupAliases name = do
@@ -548,7 +547,7 @@ checkProg' checkoccurs prog = do
     -- removed at the end.
     buildFtable = do table <- initialFtable prog'
                      foldM expand table $ progFunctions prog'
-    expand ftable (FunDec name ret params _)
+    expand ftable (FunDef _ name ret params _)
       | HM.member name ftable =
         bad $ DupDefinitionError name
       | otherwise =
@@ -564,8 +563,8 @@ initialFtable _ = fmap HM.fromList $ mapM addBuiltin $ HM.toList builtInFunction
         name = ID (nameFromString "x", 0)
 
 checkFun :: Checkable lore =>
-            FunDec lore -> TypeM lore ()
-checkFun (FunDec fname rettype params body) =
+            FunDef lore -> TypeM lore ()
+checkFun (FunDef _ fname rettype params body) =
   context ("In function " ++ nameToString fname) $
     checkFun' (fname,
                retTypeValues rettype,
@@ -744,9 +743,10 @@ checkPrimOp (Index cs ident idxes) = do
     bad $ IndexingError (arrayRank vt) (length idxes)
   mapM_ (require [Prim int32]) idxes
 
-checkPrimOp (Iota e x) = do
+checkPrimOp (Iota e x s) = do
   require [Prim int32] e
   require [Prim int32] x
+  require [Prim int32] s
 
 checkPrimOp (Replicate countexp valexp) = do
   require [Prim int32] countexp
@@ -811,7 +811,6 @@ checkPrimOp (Partition cs _ flags arrs) = do
       bad $ TypeError $
       "Array argument " ++ pretty arr ++
       " to partition has type " ++ pretty arrt ++ "."
-
 
 checkExp :: Checkable lore =>
             Exp lore -> TypeM lore ()
@@ -1006,7 +1005,7 @@ patternContext :: Typed attr =>
 patternContext pat rt = do
   (rt', (restpat,_), shapepat) <- runRWST (mapM extract rt) () (pat, HM.empty)
   return (rt', restpat, shapepat)
-  where extract t = setArrayShape t <$> Shape <$>
+  where extract t = setArrayShape t . Shape <$>
                     mapM extract' (extShapeDims $ arrayShape t)
         extract' (Free se) = return se
         extract' (Ext x)   = correspondingVar x
@@ -1063,19 +1062,17 @@ checkFuncall fname paramts args = do
 
 checkLambda :: Checkable lore =>
                Lambda lore -> [Arg] -> TypeM lore ()
-checkLambda (Lambda i params body rettype) args = do
-  iparam <- primLParam i int32
+checkLambda (Lambda params body rettype) args = do
   let fname = nameFromString "<anonymous>"
   if length params == length args then do
     checkFuncall Nothing
-      (map ((`toDecl` Nonunique) . paramType) $ iparam:params) $
-      (Prim int32, mempty) : args
+      (map ((`toDecl` Nonunique) . paramType) params) args
     let consumable = zip (map paramName params) (map argAliases args)
     checkFun' (fname,
                staticShapes $ map (`toDecl` Nonunique) rettype,
                [ (paramName param,
                   LParamInfo $ paramAttr param)
-               | param <- iparam:params ],
+               | param <- params ],
                body) consumable $ do
       checkLambdaParams params
       mapM_ checkType rettype
@@ -1084,9 +1081,8 @@ checkLambda (Lambda i params body rettype) args = do
 
 checkExtLambda :: Checkable lore =>
                   ExtLambda lore -> [Arg] -> TypeM lore ()
-checkExtLambda (ExtLambda i params body rettype) args =
+checkExtLambda (ExtLambda params body rettype) args =
   if length params == length args then do
-    iparam <- primLParam i int32
     checkFuncall Nothing (map ((`toDecl` Nonunique) . paramType) params) args
     let fname = nameFromString "<anonymous>"
         consumable = zip (map paramName params) (map argAliases args)
@@ -1094,7 +1090,7 @@ checkExtLambda (ExtLambda i params body rettype) args =
                map (`toDecl` Nonunique) rettype,
                [ (paramName param,
                   LParamInfo $ paramAttr param)
-               | param <- iparam:params ],
+               | param <- params ],
                body) consumable $
       checkBindings (bodyBindings body) $ do
         checkResult $ bodyResult body

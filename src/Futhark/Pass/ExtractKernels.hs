@@ -187,7 +187,7 @@ extractKernels :: Pass SOACS Out.Kernels
 extractKernels =
   Pass { passName = "extract kernels"
        , passDescription = "Perform kernel extraction"
-       , passFunction = runDistribM . fmap Prog . mapM transformFunDec . progFunctions
+       , passFunction = runDistribM . fmap Prog . mapM transformFunDef . progFunctions
        }
 
 newtype DistribM a = DistribM (RWS (Scope Out.Kernels) Log VNameSource a)
@@ -205,11 +205,11 @@ runDistribM (DistribM m) = do
   return x
   where positionNameSource (x, src, msgs) = ((x, msgs), src)
 
-transformFunDec :: FunDec -> DistribM Out.FunDec
-transformFunDec (FunDec name rettype params body) = do
+transformFunDef :: FunDef -> DistribM Out.FunDef
+transformFunDef (FunDef entry name rettype params body) = do
   body' <- localScope (scopeOfFParams params) $
            transformBody body
-  return $ FunDec name rettype params body'
+  return $ FunDef entry name rettype params body'
 
 transformBody :: Body -> DistribM Out.Body
 transformBody body = do bnds <- transformBindings $ bodyBindings body
@@ -231,11 +231,11 @@ sequentialisedUnbalancedBinding :: Binding -> DistribM (Maybe [Binding])
 sequentialisedUnbalancedBinding (Let pat _ (Op soac@(Map _ _ lam _)))
   | unbalancedLambda lam = do
       types <- asksScope scopeForSOACs
-      Just <$> snd <$> runBinderT (FOT.transformSOAC pat soac) types
+      Just . snd <$> runBinderT (FOT.transformSOAC pat soac) types
 sequentialisedUnbalancedBinding (Let pat _ (Op soac@(Redomap _ _ _ lam1 lam2 _ _)))
   | unbalancedLambda lam1 || unbalancedLambda lam2 = do
       types <- asksScope scopeForSOACs
-      Just <$> snd <$> runBinderT (FOT.transformSOAC pat soac) types
+      Just . snd <$> runBinderT (FOT.transformSOAC pat soac) types
 sequentialisedUnbalancedBinding _ =
   return Nothing
 
@@ -350,6 +350,10 @@ transformBinding (Let pat () (Op (Stream cs w (MapLike _) map_fun arrs))) = do
   transformBindings =<<
     (snd <$> runBinderT (sequentialStreamWholeArray pat cs w [] map_fun arrs) types)
 
+transformBinding (Let pat () (Op (Write cs t i v a))) =
+  -- It really is this simple (right now).
+  return [Let pat () (Op (WriteKernel cs t i v a))]
+
 transformBinding bnd =
   runBinder_ $ FOT.transformBindingRecursively bnd
 
@@ -365,7 +369,7 @@ distributeMap pat (MapLoop cs w lam arrs) = do
   types <- askScope
   let env = KernelEnv { kernelNest =
                         singleNesting (Nesting mempty $
-                                       MapNesting pat cs w (lambdaIndex lam) $
+                                       MapNesting pat cs w $
                                        zip (lambdaParams lam) arrs)
                       , kernelScope =
                         types <> scopeForKernels (scopeOf lam)
@@ -468,7 +472,7 @@ mapNesting pat cs w lam arrs = local $ \env ->
       , kernelScope = kernelScope env <> scopeForKernels (scopeOf lam)
       }
   where nest = Nesting mempty $
-               MapNesting pat cs w (lambdaIndex lam) $
+               MapNesting pat cs w $
                zip (lambdaParams lam) arrs
 
 unbalancedLambda :: Lambda -> Bool
@@ -495,6 +499,8 @@ unbalancedLambda lam =
           w `subExpBound` bound
         unbalancedBinding bound (Op (Stream _ w _ _ _)) =
           w `subExpBound` bound
+        unbalancedBinding _ (Op Write{}) =
+          False
         unbalancedBinding bound (DoLoop _ merge (ForLoop i iterations) body) =
           iterations `subExpBound` bound ||
           unbalancedBody bound' body
@@ -546,7 +552,6 @@ leavingNesting (MapLoop cs w lam arrs) acc =
              lam' = Lambda { lambdaBody = body
                            , lambdaReturnType = map rowType $ patternTypes pat
                            , lambdaParams = used_params
-                           , lambdaIndex = lambdaIndex lam
                            }
          in addSOACtoKernel pat (Map cs w lam' used_arrs)
             acc' { kernelBindings = [] }
@@ -592,7 +597,10 @@ maybeDistributeBinding bnd@(Let pat _ (DoLoop [] val form body)) acc
         types <- asksScope scopeForSOACs
         bnds <- runReaderT
                 (interchangeLoops nest (SeqLoop pat val form body)) types
-        bnds' <- runDistribM $ transformBindings bnds
+        -- runDistribM starts out with an empty scope, so we have to
+        -- immmediately insert the real one.
+        scope <- askScope
+        bnds' <- runDistribM $ localScope scope $ transformBindings bnds
         addKernel bnds'
       return acc'
     _ ->
@@ -611,18 +619,14 @@ maybeDistributeBinding (Let pat _ (Op (Reduce cs w comm lam input))) acc
 --
 -- If the scan cannot be distributed by itself, it will be
 -- sequentialised in the default case for this function.
-maybeDistributeBinding bnd@(Let _ _ (Op (Scan cs w lam input))) acc =
+maybeDistributeBinding bnd@(Let pat _ (Op (Scan cs w lam input))) acc =
   distributeSingleBinding acc bnd >>= \case
-    Just (kernels, _, nest, acc') -> do
-      lam' <- FOT.transformLambda lam
-      localScope (typeEnvFromKernelAcc acc') $
-        segmentedScanKernel nest cs w lam' input >>= \case
-          Nothing ->
-            addBindingToKernel bnd acc
-          Just bnds -> do
-            addKernels kernels
-            addKernel bnds
-            return acc'
+    Just (kernels, res, nest, acc')
+      | Just perm <- res `isPermutationOf` map Var (patternNames pat) -> do
+          lam' <- FOT.transformLambda lam
+          localScope (typeEnvFromKernelAcc acc') $
+            segmentedScanKernel nest perm cs w lam' input >>=
+            kernelOrNot bnd acc kernels acc'
     _ ->
       addBindingToKernel bnd acc
 
@@ -631,20 +635,31 @@ maybeDistributeBinding bnd@(Let _ _ (Op (Scan cs w lam input))) acc =
 --
 -- If the reduction cannot be distributed by itself, it will be
 -- sequentialised in the default case for this function.
-maybeDistributeBinding bnd@(Let _pat _ (Op (Reduce cs w comm lam input))) acc =
+maybeDistributeBinding bnd@(Let pat _ (Op (Reduce cs w comm lam input))) acc =
   distributeSingleBinding acc bnd >>= \case
-    Just (kernels, _, nest, acc') ->
-      localScope (typeEnvFromKernelAcc acc') $ do
-        lam' <- FOT.transformLambda lam
-        regularSegmentedReduceKernel nest cs w comm lam' input >>= \case
-          Nothing ->
-            addBindingToKernel bnd acc
-          Just bnds -> do
-            addKernels kernels
-            addKernel bnds
-            return acc'
+    Just (kernels, res, nest, acc')
+      | Just perm <- map Var (patternNames pat) `isPermutationOf` res ->
+          localScope (typeEnvFromKernelAcc acc') $ do
+          lam' <- FOT.transformLambda lam
+          regularSegmentedReduceKernel nest perm cs w comm lam' input >>=
+            kernelOrNot bnd acc kernels acc'
     _ ->
       addBindingToKernel bnd acc
+
+maybeDistributeBinding (Let pat attr (PrimOp (Replicate n v))) acc
+  | [t] <- patternTypes pat = do
+      -- XXX: We need a temporary dummy binding to prevent an empty
+      -- map body.  The kernel extractor does not like empty map
+      -- bodies.
+      tmp <- newVName "tmp"
+      let rowt = rowType t
+          newbnd = Let pat attr $ Op $ Map [] n lam []
+          tmpbnd = Let (Pattern [] [PatElem tmp BindVar rowt]) () $ PrimOp $ SubExp v
+          lam = Lambda { lambdaReturnType = [rowt]
+                       , lambdaParams = []
+                       , lambdaBody = mkBody [tmpbnd] [Var tmp]
+                       }
+      maybeDistributeBinding newbnd acc
 
 maybeDistributeBinding bnd@(Let _ _ (PrimOp Copy{})) acc = do
   acc' <- distribute acc
@@ -694,10 +709,11 @@ distributeSingleBinding acc bnd = do
                                    })
 
 segmentedScanKernel :: KernelNest
+                    -> [Int]
                     -> Certificates -> SubExp -> Out.Lambda -> [(SubExp, VName)]
                     -> KernelM (Maybe [Out.Binding])
-segmentedScanKernel nest cs segment_size lam scan_inps =
-  isSegmentedOp nest segment_size lam scan_inps $
+segmentedScanKernel nest perm cs segment_size lam scan_inps =
+  isSegmentedOp nest perm segment_size lam scan_inps $
   \pat flat_pat _num_segments total_num_elements scan_inps' -> do
     blockedSegmentedScan segment_size flat_pat cs total_num_elements lam scan_inps'
 
@@ -710,10 +726,11 @@ segmentedScanKernel nest cs segment_size lam scan_inps =
           PrimOp $ Reshape [] (map DimNew dims) flat
 
 regularSegmentedReduceKernel :: KernelNest
-                      -> Certificates -> SubExp -> Commutativity -> Out.Lambda -> [(SubExp, VName)]
-                      -> KernelM (Maybe [Out.Binding])
-regularSegmentedReduceKernel nest cs segment_size comm lam reduce_inps =
-  isSegmentedOp nest segment_size lam reduce_inps $
+                             -> [Int]
+                             -> Certificates -> SubExp -> Commutativity -> Out.Lambda -> [(SubExp, VName)]
+                             -> KernelM (Maybe [Out.Binding])
+regularSegmentedReduceKernel nest perm cs segment_size comm lam reduce_inps =
+  isSegmentedOp nest perm segment_size lam reduce_inps $
   \pat flat_pat num_segments total_num_elements reduce_inps' ->
     if False -- Using a scan seems an efficient general method.
       then regularSegmentedReduce segment_size num_segments pat cs comm lam reduce_inps'
@@ -723,6 +740,7 @@ regularSegmentedReduceKernel nest cs segment_size comm lam reduce_inps =
            cs total_num_elements lam reduce_inps'
 
 isSegmentedOp :: KernelNest
+              -> [Int]
               -> SubExp
               -> Out.Lambda
               -> [(SubExp, VName)]
@@ -733,7 +751,7 @@ isSegmentedOp :: KernelNest
                   -> [(SubExp, VName)]
                   -> Binder Out.Kernels ())
               -> KernelM (Maybe [Out.Binding])
-isSegmentedOp nest segment_size lam scan_inps m = runMaybeT $ do
+isSegmentedOp nest perm segment_size lam scan_inps m = runMaybeT $ do
   -- We must verify that array inputs to the operation are inputs to
   -- the outermost loop nesting or free in the loop nest, and that
   -- none of the names bound by the loop nest are used in the lambda.
@@ -791,7 +809,8 @@ isSegmentedOp nest segment_size lam scan_inps m = runMaybeT $ do
 
     op_inps' <- mapM flatten =<< sequence mk_inps
 
-    let pat = loopNestingPattern $ fst nest
+    let pat = Pattern [] $ rearrangeShape perm $
+              patternValueElements $ loopNestingPattern $ fst nest
         flatPatElem pat_elem t = do
           let t' = arrayOfRow t total_num_elements
           name <- newVName $ baseString (patElemName pat_elem) ++ "_flat"
@@ -803,3 +822,13 @@ isSegmentedOp nest segment_size lam scan_inps m = runMaybeT $ do
 
 
     m pat flat_pat nesting_size total_num_elements op_inps'
+
+kernelOrNot :: Binding -> KernelAcc
+            -> PostKernels -> KernelAcc -> Maybe [Out.Binding]
+            -> KernelM KernelAcc
+kernelOrNot bnd acc _ _ Nothing =
+  addBindingToKernel bnd acc
+kernelOrNot _ _ kernels acc' (Just bnds) = do
+  addKernels kernels
+  addKernel bnds
+  return acc'

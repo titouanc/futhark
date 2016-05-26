@@ -28,7 +28,6 @@ import Futhark.MonadFreshNames
 import Futhark.Optimise.Simplifier.RuleM
 
 -- | A function that, given a variable name, returns its definition.
--- XXX: This duplicates something in Futhark.Optimise.Simplification.
 type VarLookup lore = VName -> Maybe (Exp lore)
 
 {-
@@ -57,7 +56,8 @@ foldClosedForm :: MonadBinder m =>
 foldClosedForm look pat lam accs arrs = do
   inputsize <- arraysSize 0 <$> mapM lookupType arrs
   closedBody <- checkResults (patternNames pat) inputsize mempty knownBindings
-                (map paramIdent $ lambdaParams lam) (lambdaBody lam) accs
+                (map paramName (lambdaParams lam))
+                (lambdaBody lam) accs
   isEmpty <- newVName "fold_input_is_empty"
   letBindNames'_ [isEmpty] $
     PrimOp $ CmpOp (CmpEq int32) inputsize (intConst Int32 0)
@@ -74,22 +74,19 @@ loopClosedForm :: MonadBinder m =>
                -> [(FParam (Lore m),SubExp)]
                -> Names -> SubExp -> Body (Lore m)
                -> RuleM m ()
-loopClosedForm pat merge i bound body
-  | respat == mergenames = do
-    closedBody <- checkResults respat bound i knownBindings
-                  mergeidents body mergeexp
-    isEmpty <- newVName "bound_is_zero"
-    letBindNames'_ [isEmpty] $
-      PrimOp $ CmpOp (CmpSlt Int32) bound (intConst Int32 0)
-    letBindNames'_ (patternNames pat) =<<
-      eIf (eSubExp $ Var isEmpty)
-      (resultBodyM mergeexp)
-      (renameBody closedBody)
-  | otherwise = cannotSimplify
-  where respat = map paramName mergepat
-        (mergepat, mergeexp) = unzip merge
+loopClosedForm pat merge i bound body = do
+  closedBody <- checkResults mergenames bound i knownBindings
+                (map identName mergeidents) body mergeexp
+  isEmpty <- newVName "bound_is_zero"
+  letBindNames'_ [isEmpty] $
+    PrimOp $ CmpOp (CmpSlt Int32) bound (intConst Int32 0)
+  letBindNames'_ (patternNames pat) =<<
+    eIf (eSubExp $ Var isEmpty)
+    (resultBodyM mergeexp)
+    (renameBody closedBody)
+  where (mergepat, mergeexp) = unzip merge
         mergeidents = map paramIdent mergepat
-        mergenames = map identName mergeidents
+        mergenames = map paramName mergepat
         knownBindings = HM.fromList $ zip mergenames mergeexp
 
 checkResults :: MonadBinder m =>
@@ -97,7 +94,7 @@ checkResults :: MonadBinder m =>
              -> SubExp
              -> Names
              -> HM.HashMap VName SubExp
-             -> [Ident]
+             -> [VName] -- ^ Lambda-bound
              -> Body (Lore m)
              -> [SubExp]
              -> RuleM m (Body (Lore m))
@@ -111,16 +108,14 @@ checkResults pat size untouchable knownBindings params body accs = do
         res = bodyResult body
 
         nonFree = boundInBody body <>
-                  HS.fromList (map identName params) <>
+                  HS.fromList params <>
                   untouchable
 
-        checkResult (p, e) _
-          | Just e' <- asFreeSubExp e = letBindNames'_ [p] $ PrimOp $ SubExp e'
         checkResult (p, Var v) (accparam, acc) = do
           e@(PrimOp (BinOp bop x y)) <- liftMaybe $ HM.lookup v bndMap
           -- One of x,y must be *this* accumulator, and the other must
           -- be something that is free in the body.
-          let isThisAccum = (==Var (identName accparam))
+          let isThisAccum = (==Var accparam)
           (this, el) <- liftMaybe $
                         case ((asFreeSubExp x, isThisAccum y),
                               (asFreeSubExp y, isThisAccum x)) of

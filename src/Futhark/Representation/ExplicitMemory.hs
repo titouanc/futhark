@@ -76,7 +76,7 @@ module Futhark.Representation.ExplicitMemory
        , Exp
        , Lambda
        , ExtLambda
-       , FunDec
+       , FunDef
        , FParam
        , LParam
        , RetType
@@ -93,7 +93,7 @@ module Futhark.Representation.ExplicitMemory
        , AST.PatternT(Pattern)
        , AST.ProgT(Prog)
        , AST.ExpT(PrimOp)
-       , AST.FunDecT(FunDec)
+       , AST.FunDefT(FunDef)
        , AST.ParamT(Param)
        )
 where
@@ -113,7 +113,7 @@ import qualified Futhark.Representation.AST.Syntax as AST
 import Futhark.Representation.Kernels.Kernel
 import Futhark.Representation.AST.Syntax
   hiding (Prog, PrimOp, Exp, Body, Binding,
-          Pattern, PatElem, Lambda, ExtLambda, FunDec, FParam, LParam,
+          Pattern, PatElem, Lambda, ExtLambda, FunDef, FParam, LParam,
           RetType)
 import qualified Futhark.Analysis.ScalExp as SE
 
@@ -124,7 +124,7 @@ import Futhark.Representation.AST.Pretty
 import Futhark.Transform.Rename
 import Futhark.Transform.Substitute
 import qualified Futhark.TypeCheck as TypeCheck
-import qualified Futhark.Representation.ExplicitMemory.IndexFunction.Unsafe as IxFun
+import qualified Futhark.Representation.ExplicitMemory.IndexFunction as IxFun
 import qualified Futhark.Util.Pretty as PP
 import qualified Futhark.Optimise.Simplifier.Engine as Engine
 import Futhark.Optimise.Simplifier.Lore
@@ -145,7 +145,7 @@ type Binding = AST.Binding ExplicitMemory
 type Pattern = AST.Pattern ExplicitMemory
 type Lambda = AST.Lambda ExplicitMemory
 type ExtLambda = AST.ExtLambda ExplicitMemory
-type FunDec = AST.FunDec ExplicitMemory
+type FunDef = AST.FunDef ExplicitMemory
 type FParam = AST.FParam ExplicitMemory
 type LParam = AST.LParam ExplicitMemory
 type RetType = AST.RetType ExplicitMemory
@@ -187,7 +187,7 @@ instance CanBeAliased (MemOp ExplicitMemory) where
   addOpAliases (Alloc se space) = Alloc se space
   addOpAliases (Inner k) = Inner $ addOpAliases k
 
-instance (Attributes inner, Ranged inner) => RangedOp (MemOp inner) where
+instance Ranged inner => RangedOp (MemOp inner) where
   opRanges (Alloc _ _) =
     [unknownRange]
   opRanges (Inner k) =
@@ -245,7 +245,7 @@ data MemBound u = Scalar PrimType
                  -- ^ The corresponding identifier is a
                  -- scalar.  It must not be of array type.
                | MemMem SubExp Space
-               | ArrayMem PrimType Shape u VName IxFun.IxFun
+               | ArrayMem PrimType Shape u VName (IxFun.IxFun SE.ScalExp)
                  -- ^ The array is stored in the named memory block,
                  -- and with the given index function.  The index
                  -- function maps indices in the array to /element/
@@ -343,7 +343,7 @@ instance PP.Pretty (PatElemT (MemBound NoUniqueness)) where
 -- by an operation.  Note that the 'Eq' and 'Ord' instances are
 -- useless (everything is equal).  This type is merely a building
 -- block for 'Returns'.
-data MemReturn = ReturnsInBlock VName IxFun.IxFun
+data MemReturn = ReturnsInBlock VName (IxFun.IxFun SE.ScalExp)
                  -- ^ The array is located in a memory block that is
                  -- already in scope.
                | ReturnsNewBlock Int (Maybe SubExp)
@@ -731,7 +731,7 @@ lookupMemBound name = do
     IndexInfo -> return $ Scalar int32
 
 lookupArraySummary :: (HasScope ExplicitMemory m, Monad m) =>
-                      VName -> m (VName, IxFun.IxFun)
+                      VName -> m (VName, IxFun.IxFun SE.ScalExp)
 lookupArraySummary name = do
   summary <- lookupMemBound name
   case summary of
@@ -799,8 +799,8 @@ instance PrettyLore ExplicitMemory where
     case mapMaybe patElemAnnot $ patternElements $ bindingPattern binding of
       []     -> Nothing
       annots -> Just $ PP.folddoc (PP.</>) annots
-  ppFunDecLore fundec =
-    case mapMaybe fparamAnnot $ funDecParams fundec of
+  ppFunDefLore fundec =
+    case mapMaybe fparamAnnot $ funDefParams fundec of
       []     -> Nothing
       annots -> Just $ PP.folddoc (PP.</>) annots
   ppLambdaLore lam =
@@ -865,7 +865,7 @@ extReturns ts =
 
 arrayVarReturns :: (HasScope ExplicitMemory m, Monad m) =>
                    VName
-                -> m (PrimType, Shape, VName, IxFun.IxFun)
+                -> m (PrimType, Shape, VName, IxFun.IxFun SE.ScalExp)
 arrayVarReturns v = do
   summary <- lookupMemBound v
   case summary of
@@ -900,7 +900,7 @@ expReturns (AST.PrimOp (Reshape _ newshape v)) = do
   (et, _, mem, ixfun) <- arrayVarReturns v
   return [ReturnsArray et (ExtShape $ map (Free . newDim) newshape) NoUniqueness $
           Just $ ReturnsInBlock mem $
-          IxFun.reshape ixfun newshape]
+          IxFun.reshape ixfun $ map (fmap SE.intSubExpToScalExp) newshape]
 
 expReturns (AST.PrimOp (Rearrange _ perm v)) = do
   (et, Shape dims, mem, ixfun) <- arrayVarReturns v
@@ -932,7 +932,7 @@ expReturns (AST.PrimOp (Index _ v is)) = do
              (map (`SE.subExpToScalExp` int32) is)]
 
 expReturns (AST.PrimOp op) =
-  extReturns <$> staticShapes <$> primOpType op
+  extReturns . staticShapes <$> primOpType op
 
 expReturns (DoLoop ctx val _ _) =
     return $
@@ -944,7 +944,7 @@ expReturns (DoLoop ctx val _ _) =
               (Array bt shape u, ArrayMem _ _ _ mem ixfun)
                 | isMergeVar mem -> do
                   i <- get
-                  put $ i + 1
+                  modify succ
                   return $ ReturnsArray bt shape u $ Just $ ReturnsNewBlock i Nothing
                 | otherwise ->
                   return (ReturnsArray bt shape u $
@@ -969,6 +969,10 @@ expReturns (If _ b1 b2 ts) = do
 
 expReturns (Op (Alloc size space)) =
   return [ReturnsMemory size space]
+
+-- The result of Write is located exactly where its input is.
+expReturns (Op (Inner (WriteKernel _ _ _ _ srcs))) =
+  mapM varReturns srcs
 
 expReturns (Op (Inner k)) =
   extReturns <$> opType k
