@@ -20,10 +20,10 @@ memoryBlockMerging =
   simplePass
   "memoryblock merging"
   "Memoryblock merging" $
-  intraproceduralTransformation transformFunDec
+  intraproceduralTransformation transformFunDef
 
-transformFunDec :: MonadFreshNames m => FunDef -> m FunDef
-transformFunDec fundef =
+transformFunDef :: MonadFreshNames m => FunDef -> m FunDef
+transformFunDef fundef =
   let body' = transformBody $ funDefBody fundef in
   return fundef { funDefBody = body' }
 
@@ -49,13 +49,20 @@ f luTab freeList ((Let pat att exp):bnds)
   | Pattern conElems [PatElem elemIdName _ _] <- pat,
     freeList' <- toFreeList elemIdName luTab freeList =
       (Let pat att exp):(f luTab freeList' bnds)
+f luTab freeList ((Let pat att exp):bnds)
+  | Pattern contextE valueE <- pat =
+    let ids = map getId valueE in
+    let freeList' = foldl (\fl x -> toFreeList x luTab fl) freeList ids in
+    (Let pat att exp):(f luTab freeList' bnds)
+  where getId (PatElem elemIdName _ _) =
+          elemIdName
+
 
 -- Inverts a map from key=mem to key=lu_var
 invert :: Map.Map VName (VName, SubExp, Space)
           -> Map.Map VName [(VName, SubExp, Space)]
 invert map =
-  let tmp = Map.toList map in
-  foldl f Map.empty tmp
+  foldl f Map.empty $ Map.toList map
   where f map (mem, (var, sz, sp)) =
           Map.insertWith (++) var [(mem, sz, sp)] map
 
@@ -94,11 +101,12 @@ findLastUse bnds memTab =
   foldl (\luTab (Let pat _ e) ->
            foldl (lastUse' memTab pat) luTab (HS.toList $ freeInExp e))
   Map.empty bnds
-  where lastUse' memTab (Pattern _ [PatElem var _ _ ]) luTab freeVar =
-          case Map.lookup freeVar memTab of
-            Just (mem, sz, sp) -> Map.insert mem (var, sz, sp) luTab
-            Nothing -> luTab
-
+  where lastUse' memTab (Pattern _ valueE) luTab freeVar =
+          case valueE of -- if pat is a tuple we only look at the first value, could be done more elegantly
+            (PatElem var _ _ ):vs ->
+              case Map.lookup freeVar memTab of
+                Just (mem, sz, sp) -> Map.insert mem (var, sz, sp) luTab
+                Nothing -> luTab
 
 -- 2)
 -- Locates the identifiers stored in the memoryblocks found in 1)
