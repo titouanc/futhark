@@ -34,6 +34,7 @@ import Futhark.Internalise.TypesValues
 import Futhark.Internalise.Bindings
 import Futhark.Internalise.Lambdas
 
+
 -- | Convert a program in source Futhark to a program in the Futhark
 -- core language.
 internaliseProg :: MonadFreshNames m =>
@@ -45,7 +46,7 @@ internaliseProg prog = do
       Left err -> return $ Left err
       Right ftable -> do
         funs <- runInternaliseM ftable $
-                mapM internaliseFun $ E.progFunctions prog
+                mapM internaliseFun $ mapMaybe isFun $ E.progDecs prog
         return $ fmap I.Prog funs
   sequence $ fmap I.renameProg res
 
@@ -53,8 +54,9 @@ buildFtable :: MonadFreshNames m => E.Prog
             -> m (Either String FunTable)
 buildFtable = fmap (HM.union builtinFtable<$>) .
               runInternaliseM mempty .
-              fmap HM.fromList . mapM inspect . E.progFunctions
-  where inspect (E.FunDef _ fname (TypeDecl _ (Info rettype)) params _ _) =
+              fmap HM.fromList . mapM inspect . E.funsFromProg
+
+  where inspect (E.FunDef _ (fname, _) (TypeDecl _ (Info rettype)) params _ _) =
           bindingParams params $ \shapes values -> do
             (rettype', _) <- internaliseReturnType rettype
             let shapenames = map I.paramName shapes
@@ -77,7 +79,7 @@ buildFtable = fmap (HM.union builtinFtable<$>) .
           (E.Prim t, map E.Prim paramts)
 
 internaliseFun :: E.FunDef -> InternaliseM I.FunDef
-internaliseFun (E.FunDef entry fname (TypeDecl _ (Info rettype)) params body loc) =
+internaliseFun (E.FunDef entry (fname,_) (TypeDecl _ (Info rettype)) params body loc) =
   bindingParams params $ \shapeparams params' -> do
     (rettype', _) <- internaliseReturnType rettype
     firstbody <- internaliseBody body
@@ -156,25 +158,28 @@ internaliseExp desc (E.Empty (TypeDecl _(Info et)) loc) =
   where et' = E.removeShapeAnnotations $ E.fromStruct et
 
 internaliseExp desc (E.Apply fname args _ _)
-  | Just (rettype, _) <- HM.lookup fname I.builtInFunctions = do
+  | Just (rettype, _) <- HM.lookup fname' I.builtInFunctions = do
   args' <- mapM (internaliseExp "arg" . fst) args
   let args'' = concatMap tag args'
-  letTupExp' desc $ I.Apply fname args'' (ExtRetType [I.Prim rettype])
+  letTupExp' desc $ I.Apply fname' args'' (ExtRetType [I.Prim rettype])
   where tag ses = [ (se, I.Observe) | se <- ses ]
+        fname' = longnameToName fname
 
 internaliseExp desc (E.Apply fname args _ _) = do
   args' <- concat <$> mapM (internaliseExp "arg" . fst) args
-  (shapes, paramts, rettype_fun) <- internalFun <$> lookupFunction fname
+  (shapes, paramts, rettype_fun) <- internalFun <$> lookupFunction fname'
   argts <- mapM subExpType args'
   let diets = map I.diet paramts
       shapeargs = argShapes shapes paramts argts
       args'' = zip shapeargs (repeat I.Observe) ++
                zip args' diets
   case rettype_fun $ map (,I.Prim int32) shapeargs ++ zip args' argts of
-    Nothing -> fail $ "Cannot apply " ++ pretty fname ++ " to arguments " ++
+    Nothing -> fail $ "Cannot apply " ++ pretty fname' ++ " to arguments " ++
                pretty (shapeargs ++ args')
     Just rettype ->
-      letTupExp' desc $ I.Apply fname args'' rettype
+      letTupExp' desc $ I.Apply fname' args'' rettype
+  where
+    fname' = longnameToName fname
 
 internaliseExp desc (E.LetPat pat e body _) = do
   ses <- internaliseExp desc e
@@ -359,6 +364,14 @@ internaliseExp _ (E.Transpose e _) =
 internaliseExp _ (E.Rearrange perm e _) =
   internaliseOperation "rearrange" e $ \v ->
     return $ I.Rearrange [] perm v
+
+internaliseExp _ (E.Rotate d offset e _) = do
+  offset' <- internaliseExp1 "rotation_offset" offset
+  internaliseOperation "rotate" e $ \v -> do
+    rank <- I.arrayRank <$> lookupType v
+    let zero = constant (0::Int32)
+        offsets = replicate d zero ++ [offset'] ++ replicate (rank-d-1) zero
+    return $ I.Rotate [] offsets v
 
 internaliseExp _ (E.Reshape shape e loc) = do
   shape' <- mapM (internaliseExp1 "shape") shape
@@ -604,38 +617,70 @@ internaliseExp desc (E.Copy e _) = do
   ses <- internaliseExpToVars "copy_arg" e
   letSubExps desc [I.PrimOp $ I.Copy se | se <- ses]
 
-internaliseExp desc (E.Write i v a loc) = do
+internaliseExp desc (E.Write i v as loc) = do
   sis <- internaliseExpToVars "write_arg_i" i
   svs <- internaliseExpToVars "write_arg_v" v
-  sas <- internaliseExpToVars "write_arg_a" a
+  sas0 <- forM as $ internaliseExpToVars "write_arg_a"
+  sas <- mapM (ensureSingleElement "Futhark.Internalise.internaliseExp: Every I/O array in 'write' must be a non-tuple.") sas0
 
-  si <- case sis of
-    [si] -> return si
-    _ -> fail "Futhark.Internalise.internaliseExp: write indices array must not consist of tuples"
+  when (length sis /= length sas) $
+    fail ("Futhark.Internalise.internaliseExp: number of write sis and sas tuples is not the same"
+          ++ " (sis: " ++ show (length sis) ++ ", sas: " ++ show (length sas) ++ ")")
 
   when (length svs /= length sas) $
-    fail ("Futhark.Internalise.internaliseExp: size of write svs and sas tuples are not equal"
+    fail ("Futhark.Internalise.internaliseExp: number of write svs and sas tuples is not the same"
           ++ " (svs: " ++ show (length svs) ++ ", sas: " ++ show (length sas) ++ ")")
 
-  res <- forM (zip svs sas) $ \(sv, sa) -> do
-    t <- lookupType sa
-    si_len <- arraySize 0 <$> lookupType si
+  resTemp <- forM (zip sis svs) $ \(si, sv) -> do
+    tv <- rowType <$> lookupType sv -- the element type
+    si_shape <- arrayShape <$> lookupType si
+    let si_len = shapeSize 0 si_shape
     sv_shape <- arrayShape <$> lookupType sv
     let sv_len = shapeSize 0 sv_shape
 
-    -- Generate an assertion and reshape to ensure that sv is the same size as si.
+    -- Generate an assertion and reshapes to ensure that sv and si are the same
+    -- size.
     cmp <- letSubExp "write_cmp" $ I.PrimOp $
       I.CmpOp (I.CmpEq I.int32) si_len sv_len
     c   <- assertingOne $
       letExp "write_cert" $ I.PrimOp $
       I.Assert cmp loc
+    si' <- letExp (baseString si ++ "_write_si") $
+      I.PrimOp $ I.SubExp $ I.Var si
     sv' <- letExp (baseString sv ++ "_write_sv") $
       I.PrimOp $ I.Reshape c (reshapeOuter [DimCoercion si_len] 1 sv_shape) sv
 
-    return (t, sv', sa)
+    return (tv, si', sv')
+  let (tvs, sis', svs') = unzip3 resTemp
 
-  let (ts, svs', sas') = unzip3 res
-  letTupExp' desc $ I.Op $ I.Write [] ts si svs' sas'
+  -- Just pick something.  All sis and svs are supposed to be the same size.
+  si_shape <- arrayShape <$> lookupType (head sis)
+  let len = shapeSize 0 si_shape
+
+  let indexTypes = replicate (length tvs) (I.Prim (IntType Int32))
+      valueTypes = tvs
+      bodyTypes = indexTypes ++ valueTypes
+
+  indexNames <- replicateM (length indexTypes) $ newVName "write_index"
+  valueNames <- replicateM (length valueTypes) $ newVName "write_value"
+
+  let bodyNames = indexNames ++ valueNames
+  let bodyParams = zipWith I.Param bodyNames bodyTypes
+
+  -- This body is pretty boring right now, as every input is exactly the output.
+  -- But it can get funky later on if fused with something else.
+  (body, _) <- runBinderEmptyEnv $ insertBindingsM $ do
+    results <- forM bodyNames $ \name -> letSubExp "write_res"
+                                         $ I.PrimOp $ I.SubExp $ I.Var name
+    return $ resultBody results
+
+  let lam = Lambda { I.lambdaParams = bodyParams
+                   , I.lambdaReturnType = bodyTypes
+                   , I.lambdaBody = body
+                   }
+      sivs = sis' ++ svs'
+  aws <- mapM (fmap (arraySize 0) . lookupType) sas
+  letTupExp' desc $ I.Op $ I.Write [] len lam sivs $ zip aws sas
 
 internaliseScanOrReduce :: String -> String
                         -> (Certificates -> SubExp -> I.Lambda -> [(SubExp, VName)] -> SOAC SOACS)
@@ -653,6 +698,10 @@ internaliseScanOrReduce desc what f (lam, ne, arr, loc) = do
   let input = zip nes' arrs
   w <- arraysSize 0 <$> mapM lookupType arrs
   letTupExp' desc $ I.Op $ f [] w lam' input
+
+ensureSingleElement :: Monad m => String -> [a] -> m a
+ensureSingleElement _desc [x] = return x
+ensureSingleElement desc _ = fail desc
 
 internaliseExp1 :: String -> E.Exp -> InternaliseM I.SubExp
 internaliseExp1 desc e = do
@@ -816,7 +865,7 @@ internaliseLambda (E.AnonymFun params body (TypeDecl _ (Info rettype)) _) Nothin
   return (map (fmap I.fromDecl) params', body', map I.fromDecl rettype')
 
 internaliseLambda (E.CurryFun fname curargs _ _) maybe_rowtypes = do
-  fun_entry <- lookupFunction fname
+  fun_entry <- lookupFunction fname'
   let (shapes, paramts, int_rettype_fun) = internalFun fun_entry
       diets = map I.diet paramts
   curargs' <- concat <$> mapM (internaliseExp "curried") curargs
@@ -847,14 +896,16 @@ internaliseLambda (E.CurryFun fname curargs _ _) maybe_rowtypes = do
   case int_rettype_fun $
        map (,I.Prim int32) shapeargs ++ zip valargs valargs_types of
     Nothing ->
-      fail $ "Cannot apply " ++ pretty fname ++ " to arguments " ++
+      fail $ "Cannot apply " ++ pretty fname' ++ " to arguments " ++
       pretty (shapeargs ++ valargs)
     Just (ExtRetType ts) -> do
       funbody <- insertBindingsM $ do
         res <- letTupExp "curried_fun_result" $
-               I.Apply fname allargs $ ExtRetType ts
+               I.Apply fname' allargs $ ExtRetType ts
         resultBodyM $ map I.Var res
       return (params, funbody, map I.fromDecl ts)
+  where
+        fname' = longnameToName fname
 
 internaliseLambda (E.UnOpFun unop (Info paramtype) (Info rettype) loc) rowts = do
   (params, body, rettype') <- unOpFunToLambda unop paramtype rettype

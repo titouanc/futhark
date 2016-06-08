@@ -105,12 +105,10 @@ Examples::
 
   type person_id = int
   type int_pair  = (int, int)
-  type vec3 = (f32, f32, f32)
+  type position, velocity, vec3 = (f32, f32, f32)
 
   type pilot = person_id
   type passengers = [person_id]
-  type position = vec3
-  type velocity = vec3
   type mass     = f32
 
   type airplane = (pilot, passengers, position, velocity, mass)
@@ -128,10 +126,77 @@ attributes are overrided by outer ones::
   -- Error: using non-unique value for a unique return value.
   fun uniqueIntLists (nonuniqueIntLists p) = p
 
+
 *Dimension declarations*
 
 To declare dimensions on an array data type using type aliases, the type alias must
 define either a primitive type, or a tuple.
+
+Structures
+----------
+
+Futhark supports structures which can contain type declarations, functions and structures.
+These structures can be included into any other Futhark file.
+The syntax is as in the following example::
+
+  Vec3.fut:
+    structure Vec3 =
+      struct
+        structure F32 =
+          struct
+            type t = ( f32 , f32 , f32 )
+            fun t add(t a , t b) =
+              let (a1, a2, a3) = a in
+              let (b1, b2, b3) = b in
+              (a1 + b1, a2 + b2 , a3 + b3)
+        
+            fun t subtract(t a , t b) =
+              let (a1, a2, a3) = a in
+              let (b1, b2, b3) = b in
+              (a1 - b1, a2 - b2 , a3 - b3)
+        
+            fun t scale(f32 k , t a) =
+              let (a1, a2, a3) = a in
+              (a1 * k, a2 * k , a3 * k)
+        
+            fun f32 dot(t a , t b) =
+              let (a1, a2, a3) = a in
+              let (b1, b2, b3) = b in
+              a1*b1 + a2*b2 + a3*b3
+          end
+        
+        structure Int =
+          struct
+            type t = ( int , int , int )
+            fun t add(t a , t b) =
+              let (a1, a2, a3) = a in
+              let (b1, b2, b3) = b in
+              (a1 + b1, a2 + b2 , a3 + b3)
+        
+            fun t subtract(t a , t b) =
+              let (a1, a2, a3) = a in
+              let (b1, b2, b3) = b in
+              (a1 - b1, a2 - b2 , a3 - b3)
+        
+            fun t scale(int k , t a) =
+              let (a1, a2, a3) = a in
+              (a1 * k, a2 * k , a3 * k)
+        
+            fun int dot(t a , t b) =
+              let (a1, a2, a3) = a in
+              let (b1, b2, b3) = b in
+              a1*b1 + a2*b2 + a3*b3
+          end
+      end
+
+Functions and types within these structures can be accessed using common dot notation::
+  
+  some_example.fut
+    include Vec3
+
+    type vector = Vec3.Int.t
+    fun vector double(vector v) = Vec3.Int.plus(v,v)
+
 
 File Inclusions
 ---------------
@@ -316,11 +381,18 @@ Permute the dimensions in the array, returning a new array.
 For example, if ``b==rearrange((2,0,1),a)``, then ``b[x,y,z] =
 a[y,z,x]``.
 
+
 ``transpose(a)``
 ~~~~~~~~~~~~~~~~
 
 Return the transpose of ``a``, which must be a two-dimensional array.
 
+``rotate(d, i, a)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Rotate dimension ``d`` of the array ``a`` right by ``i`` elements.
+
+For example, if ``b=rotate(1, i, a)``, then ``b[x,y] = a[x,y-i]``.
 
 ``let pat = e in body``
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -422,13 +494,24 @@ catch-all partition that is returned last.  Always returns a tuple
 with *n+1* components.  The partitioning is stable, meaning that
 elements of the partitions retain their original relative positions.
 
-``write(indexes, values, a)``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``write(iss, vss, as_1, ..., as_n)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Set each index of the ``indexes`` array in the ``a`` array to each value of
-the ``values`` array.  If an index is -1, ignore it and its associated value.
-Return the modified array.  It is an error if there are duplicate indexes.
-``write`` does its work in-place and consumes ``a``.
+The ``write`` expression calculates the equivalent of this imperative
+code::
+
+  for iter in 0..n-1 do
+    is = iss[iter]
+    vs = vss[iter]
+    as = as_iter
+    for index in 0..size(0, is)-1:
+      i = is[index]
+      v = vs[index]
+      as[i] = v
+
+All ``iss`` and ``vss`` arrays must be of the same outer size.  Use
+``zip`` to use several of those arrays as arguments.  ``write`` does
+its work in-place and consumes all ``as`` arrays.
 
 Tuple Shimming
 --------------

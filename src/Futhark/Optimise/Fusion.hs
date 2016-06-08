@@ -324,7 +324,6 @@ greedyFuse rem_bnds lam_used_nms res (out_idds, orig_soac) = do
       isInfusible = (`HS.member` infusible res)
       is_redomap  = case orig_soac of
                         SOAC.Redomap{} -> True
-                        --SOAC.Stream {} -> True
                         _              -> False
   --
   -- Conditions for fusion:
@@ -537,10 +536,11 @@ fusionGatherBody fres (Body blore (Let pat bndtp (Op (Futhark.Reduce cs w comm l
 fusionGatherBody fres (Body _ (bnd@(Let pat _ e):bnds) res) = do
   maybesoac <- SOAC.fromExp e
   case maybesoac of
-    Right soac@(SOAC.Map _ _ lam _) -> do
-      bres  <- bindingFamily pat $ fusionGatherBody fres body
-      (used_lam, blres) <- fusionGatherLam (HS.empty, bres) lam
-      greedyFuse rem_bnds used_lam blres (pat, soac)
+    Right soac@(SOAC.Map _ _ lam _) ->
+      mapLike soac lam
+
+    Right soac@(SOAC.Write _cs _len lam _ivs _as) ->
+      mapLike soac lam
 
     Right soac@(SOAC.Redomap _ _ _ outer_red inner_red nes _) ->
       -- a redomap does not neccessarily start a new kernel, e.g.,
@@ -586,6 +586,11 @@ fusionGatherBody fres (Body _ (bnd@(Let pat _ e):bnds) res) = do
           bres  <- bindingFamily pat $ fusionGatherBody lres body
           bres' <- foldM fusionGatherSubExp bres nes
           greedyFuse rem_bnds used_lam bres' (pat, soac)
+
+        mapLike soac lambda = do
+          bres  <- bindingFamily pat $ fusionGatherBody fres body
+          (used_lam, blres) <- fusionGatherLam (HS.empty, bres) lambda
+          greedyFuse rem_bnds used_lam blres (pat, soac)
 
 fusionGatherBody fres (Body _ [] res) =
   foldM fusionGatherExp fres $ map (PrimOp . SubExp) res
@@ -638,6 +643,7 @@ fusionGatherExp _ (Op Futhark.Map{}) = errorIllegal "map"
 fusionGatherExp _ (Op Futhark.Reduce{}) = errorIllegal "reduce"
 fusionGatherExp _ (Op Futhark.Scan{}) = errorIllegal "scan"
 fusionGatherExp _ (Op Futhark.Redomap{}) = errorIllegal "redomap"
+fusionGatherExp _ (Op Futhark.Write{}) = errorIllegal "write"
 
 -----------------------------------
 ---- Generic Traversal         ----

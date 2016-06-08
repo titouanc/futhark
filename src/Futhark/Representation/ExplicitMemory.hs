@@ -909,6 +909,13 @@ expReturns (AST.PrimOp (Rearrange _ perm v)) = do
   return [ReturnsArray et (ExtShape $ map Free dims') NoUniqueness $
           Just $ ReturnsInBlock mem ixfun']
 
+expReturns (AST.PrimOp (Rotate _ offsets v)) = do
+  (et, Shape dims, mem, ixfun) <- arrayVarReturns v
+  let offsets' = map (`SE.subExpToScalExp` int32) offsets
+      ixfun' = IxFun.rotate ixfun offsets'
+  return [ReturnsArray et (ExtShape $ map Free dims) NoUniqueness $
+          Just $ ReturnsInBlock mem ixfun']
+
 expReturns (AST.PrimOp (Split _ sizeexps v)) = do
   (et, shape, mem, ixfun) <- arrayVarReturns v
   let newShapes = map (shape `setOuterDim`) sizeexps
@@ -971,8 +978,8 @@ expReturns (Op (Alloc size space)) =
   return [ReturnsMemory size space]
 
 -- The result of Write is located exactly where its input is.
-expReturns (Op (Inner (WriteKernel _ _ _ _ srcs))) =
-  mapM varReturns srcs
+expReturns (Op (Inner (WriteKernel _ _ _ _ _ as))) =
+  mapM (varReturns . snd) as
 
 expReturns (Op (Inner k)) =
   extReturns <$> opType k

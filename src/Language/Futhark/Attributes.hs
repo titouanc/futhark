@@ -57,9 +57,22 @@ module Language.Futhark.Attributes
   --
   -- $names
   , removeNames
+  , nameToLongName
 
   -- * Queries on values
   , valueType
+
+  -- * Getters for decs
+  , isType
+  , isFun
+  , isFunOrType
+  , isMod
+  , isSig
+  , funsFromProg
+  , typesFromProg
+  , sigsFromProg
+  , modsFromProg
+  , decLoc
 
   -- | Values of these types are produces by the parser.  They use
   -- unadorned names and have no type information, apart from that
@@ -84,6 +97,7 @@ import Control.Monad.Writer
 import Data.Hashable
 import Data.List
 import Data.Loc
+import Data.Maybe
 import qualified Data.HashSet as HS
 import qualified Data.HashMap.Lazy as HM
 
@@ -592,6 +606,7 @@ typeOf (Reshape shape  e _) =
   Rank (length shape) `setArrayShape` typeOf e
 typeOf (Rearrange _ e _) = typeOf e
 typeOf (Transpose e _) = typeOf e
+typeOf (Rotate _ _ e _) = typeOf e
 typeOf (Map f _ _) = arrayType 1 et Unique `setAliases` HS.empty
   where et = lambdaReturnType f
 typeOf (Reduce _ fun _ _ _) =
@@ -629,7 +644,9 @@ typeOf (Split splitexps e _) =
   Tuple $ replicate (1 + length splitexps) (typeOf e)
 typeOf (Copy e _) = typeOf e `setUniqueness` Unique `setAliases` HS.empty
 typeOf (DoLoop _ _ _ _ body _) = typeOf body
-typeOf (Write _i _v a _) = typeOf a `setAliases` HS.empty
+typeOf (Write _i _v as _) = case as of
+  [a] -> typeOf a `setAliases` HS.empty
+  _ -> Tuple $ map (\a -> typeOf a `setAliases` HS.empty) as
 
 -- | The result of applying the arguments of the given types to a
 -- function with the given return type, consuming its parameters with
@@ -784,6 +801,47 @@ contractTupleArrayElemTypeBase (ArrayArrayElem arrtpbase) =
   contractArrayTypeBase arrtpbase
 contractTupleArrayElemTypeBase (TupleArrayElem tps) =
   UserTuple (map contractTupleArrayElemTypeBase tps) noLoc
+
+funsFromProg :: ProgBase f vn -> [FunDefBase f vn]
+funsFromProg prog = mapMaybe isFun $ progDecs prog
+
+typesFromProg :: ProgBase f vn -> [TypeDefBase f vn]
+typesFromProg prog = mapMaybe isType $ progDecs prog
+
+sigsFromProg :: ProgBase f vn -> [SigDefBase f vn]
+sigsFromProg prog = mapMaybe isSig $ progDecs prog
+
+modsFromProg :: ProgBase f vn -> [ModDefBase f vn]
+modsFromProg prog = mapMaybe isMod $ progDecs prog
+
+isFun :: DecBase f vn -> Maybe (FunDefBase f vn)
+isFun (FunOrTypeDec (FunDec a)) = Just a
+isFun _                         = Nothing
+
+isType :: DecBase f vn -> Maybe (TypeDefBase f vn)
+isType (FunOrTypeDec (TypeDec t)) = Just t
+isType _                          = Nothing
+
+isFunOrType :: DecBase f vn -> Maybe (FunOrTypeDecBase f vn)
+isFunOrType (FunOrTypeDec ft) = Just ft
+isFunOrType _                 = Nothing
+
+isSig :: DecBase f vn -> Maybe (SigDefBase f vn)
+isSig (SigDec sig) = Just sig
+isSig _            = Nothing
+
+isMod :: DecBase f vn -> Maybe (ModDefBase f vn)
+isMod (ModDec modd) = Just modd
+isMod _            = Nothing
+
+nameToLongName :: Name -> LongName
+nameToLongName n = ([], n)
+
+decLoc :: DecBase f vn -> SrcLoc
+decLoc (FunOrTypeDec (FunDec (FunDef _ _ _ _ _ loc))) = loc
+decLoc (FunOrTypeDec (TypeDec (TypeDef _ _ loc))) = loc
+decLoc (SigDec (SigDef _ _ loc)) = loc
+decLoc (ModDec (ModDef _ _ loc)) = loc
 
 -- | A type with no aliasing information but shape annotations.
 type UncheckedType = TypeBase ShapeDecl NoInfo Name
