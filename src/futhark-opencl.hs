@@ -23,6 +23,7 @@ import Futhark.Pass.ExtractKernels
 import Futhark.Pass.KernelBabysitting
 import Futhark.Pass.ExpandAllocations
 import Futhark.Pass.CoalesceMemoryAccesses
+import Futhark.Pass.MemoryBlockMerging
 import Futhark.Util.Options
 import Futhark.Optimise.DoubleBuffer
 
@@ -108,7 +109,13 @@ compilerPipeline =
          , simplifyExplicitMemory
          , doubleBuffer
          , simplifyExplicitMemory
+-- call memory block pass
+         , memoryBlockMerging
          , expandAllocations
+-- call simplifyExplicitMemory pass
+         , simplifyExplicitMemory
+-- call memory block pass
+         , memoryBlockMerging
          , coalesceMemoryAccesses
          , simplifyExplicitMemory
          ]
