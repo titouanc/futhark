@@ -1368,6 +1368,10 @@ checkDim _ AnyDim =
   return AnyDim
 checkDim _ (ConstDim k) =
   return $ ConstDim k
+checkDim loc (CompositeDim left right) = do
+  okleft <- checkDim loc left
+  okright <- checkDim loc right
+  return $ CompositeDim okleft okright
 checkDim loc (NamedDim name) = do
   (QualName _ name', t) <- lookupVar (qualName name) loc
   observe $ Ident name' (Info (Prim (Signed Int32))) loc
