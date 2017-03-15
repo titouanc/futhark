@@ -164,6 +164,9 @@ data DimDecl vn = NamedDim vn
                   -- function parameter, this is in a binding
                   -- position.  In a return type, this will give rise
                   -- to an assertion.
+                | CompositeDim DimDecl DimDecl
+                  -- ^ A composite declaration
+                  -- Allows to write `fn f(a: [m]t, b: [n]t): [m-n+1]t`
                 | ConstDim Int
                   -- ^ The size is a constant.
                 | AnyDim

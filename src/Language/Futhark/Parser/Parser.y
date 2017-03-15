@@ -432,6 +432,8 @@ DimDecl :: { DimDecl Name }
         : id
           { let L _ (ID name) = $1
             in NamedDim name }
+        | DimDecl '+' DimDecl
+          { CompositeDim $1 $3 }
         | declit
           { let L _ (DECLIT n) = $1
             in ConstDim (fromIntegral n) }
