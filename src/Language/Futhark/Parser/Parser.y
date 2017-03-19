@@ -432,7 +432,6 @@ DimDecl :: { DimDecl Name }
         : id
           { let L _ (ID name) = $1
             in NamedDim name }
-        | '+...' { error "lol, got here" }
         | DimDecl '+...' DimDecl
           { ArithDim Plus $1 $3 }
         | DimDecl '-...' DimDecl
