@@ -434,9 +434,9 @@ DimDecl :: { DimDecl Name }
             in NamedDim name }
         | '+...' { error "lol, got here" }
         | DimDecl '+...' DimDecl
-          { CompositeDim $1 $3 }
+          { ArithDim Plus $1 $3 }
         | DimDecl '-...' DimDecl
-          { CompositeDim $1 $3 }
+          { ArithDim Minus $1 $3 }
         | declit
           { let L _ (DECLIT n) = $1
             in ConstDim (fromIntegral n) }

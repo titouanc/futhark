@@ -151,6 +151,12 @@ internaliseDeclType' ddi orig_t =
                 Nothing -> do new <- lift $ newVName $ baseString name
                               put (i, m, (fname,new):cm)
                               return $ I.Var new
+        internaliseDim BindDims (ArithDim _ _ _) =
+          fail "Cannot bind an arithmetic dependent shape"
+        internaliseDim AssertDims (ArithDim op l r) = do
+          lint <- internaliseDim AssertDims l
+          rint <- internaliseDim AssertDims r
+          Ext <$> newId
 
         -- | Add vacuous existential type information to a type.  Every
         -- dimension will be its own 'Ext'.
