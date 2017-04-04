@@ -110,7 +110,8 @@ keyword s =
     "loop"         -> LOOP
     "in"           -> IN
     "default"      -> DEFAULT
-    "fun"          -> FUN
+    "fun"          -> LET -- retained for backwards compatibility; remove soon
+    "val"          -> VAL
     "for"          -> FOR
     "do"           -> DO
     "with"         -> WITH
@@ -124,9 +125,8 @@ keyword s =
     "rotate"       -> ROTATE
     "map"          -> MAP
     "reduce"       -> REDUCE
-    "reduceComm"   -> REDUCECOMM
+    "reduce_comm"  -> REDUCECOMM
     "zip"          -> ZIP
-    "zipWith"      -> ZIPWITH
     "unzip"        -> UNZIP
     "unsafe"       -> UNSAFE
     "scan"         -> SCAN
@@ -137,18 +137,17 @@ keyword s =
     "empty"        -> EMPTY
     "copy"         -> COPY
     "while"        -> WHILE
-    "streamMap"    -> STREAM_MAP
-    "streamMapPer" -> STREAM_MAPPER
-    "streamRed"    -> STREAM_RED
-    "streamRedPer" -> STREAM_REDPER
-    "streamSeq"    -> STREAM_SEQ
+    "stream_map"     -> STREAM_MAP
+    "stream_map_per" -> STREAM_MAPPER
+    "stream_red"     -> STREAM_RED
+    "stream_red_per" -> STREAM_REDPER
+    "stream_seq"     -> STREAM_SEQ
     "write"        -> WRITE
     "include"      -> INCLUDE
     "import"       -> IMPORT
     "type"         -> TYPE
     "entry"        -> ENTRY
     "module"       -> MODULE
-    "val"          -> VAL
     "open"         -> OPEN
     _              -> ID $ nameFromText s
 
@@ -294,7 +293,6 @@ data Token = ID Name
            | REARRANGE
            | TRANSPOSE
            | ROTATE
-           | ZIPWITH
            | ZIP
            | UNZIP
            | UNSAFE
