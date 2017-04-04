@@ -74,28 +74,25 @@ instance Pretty (RecordArrayElemTypeBase Rank as) where
         braces $ commasep $ map ppField $ M.toList fs
     where ppField (name, t) = text (nameToString name) <> colon <> ppr t
 
+instance (Eq vn, Hashable vn, Pretty vn) => Pretty (DimDecl vn) where
+  ppr AnyDim       = mempty
+  ppr (NamedDim v) = ppr v
+  ppr (ConstDim n) = ppr n
+  ppr (ArithDim op l r) = ppr l <> ppr op <> ppr r
+
 instance (Eq vn, Hashable vn, Pretty vn) => Pretty (ArrayTypeBase (ShapeDecl vn) as) where
   ppr (PrimArray et (ShapeDecl ds) u _) =
-    ppr u <> mconcat (map (brackets . f) ds) <> ppr et
-    where f AnyDim       = mempty
-          f (NamedDim v) = ppr v
-          f (ConstDim n) = ppr n
+    ppr u <> mconcat (map (brackets . ppr) ds) <> ppr et
 
   ppr (PolyArray et (ShapeDecl ds) u _) =
-    ppr u <> mconcat (map (brackets . f) ds) <> ppr (baseName <$> qualNameFromTypeName et)
-    where f AnyDim       = mempty
-          f (NamedDim v) = ppr v
-          f (ConstDim n) = ppr n
+    ppr u <> mconcat (map (brackets . ppr) ds) <> ppr (baseName <$> qualNameFromTypeName et)
 
   ppr (RecordArray fs (ShapeDecl ds) u)
     | Just ts <- areTupleFields fs =
         prefix <> parens (commasep $ map ppr ts)
     | otherwise =
         prefix <> braces (commasep $ map ppField $ M.toList fs)
-    where prefix =       ppr u <> mconcat (map (brackets . f) ds)
-          f AnyDim       = mempty
-          f (NamedDim v) = ppr v
-          f (ConstDim n) = ppr n
+    where prefix =       ppr u <> mconcat (map (brackets . ppr) ds)
           ppField (name, t) = text (nameToString name) <> colon <> ppr t
 
 instance Pretty (ArrayTypeBase Rank as) where
