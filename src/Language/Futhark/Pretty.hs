@@ -51,11 +51,21 @@ instance Pretty PrimValue where
   ppr (BoolValue False) = text "false"
   ppr (FloatValue v) = ppr v
 
+instance Pretty ArithDimOp where
+  ppr DimPlus  = text "+"
+  ppr DimMinus = text "-"
+
+instance (Eq vn, Hashable vn, Pretty vn) => Pretty (RDimDecl vn) where
+  ppr (RNamedDim v) = ppr v
+  ppr (RConstDim n) = ppr n
+  ppr (RArithDim op l r) = ppr l <> ppr op <> ppr r 
+
 instance (Eq vn, Hashable vn, Pretty vn) => Pretty (DimDecl vn) where
   ppr AnyDim       = mempty
   ppr (NamedDim v) = ppr v
   ppr (BoundDim v) = text "#" <> ppr v
   ppr (ConstDim n) = ppr n
+  ppr (ArithDim op l r) = ppr l <> ppr op <> ppr r 
 
 instance (Eq vn, Hashable vn, Pretty vn) => Pretty (ShapeDecl vn) where
   ppr (ShapeDecl ds) = mconcat (map (brackets . ppr) ds)

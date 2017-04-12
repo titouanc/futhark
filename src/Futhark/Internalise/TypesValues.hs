@@ -147,6 +147,17 @@ internaliseDeclType' orig_t =
                 Nothing -> do new <- lift $ newVName $ baseString $ qualLeaf name
                               put (i, m, (fname,new):cm)
                               return $ I.Var new
+        internaliseDim (ArithDim op l r) = do
+          l' <- internaliseRDim l
+          r' <- internaliseRDim r
+          return $ I.Comb op l' r'
+
+        internaliseRDim (RConstDim n) =
+          internaliseDim (ConstDim n)
+        internaliseRDim (RNamedDim name) =
+          internaliseDim (NamedDim name)
+        internaliseRDim (RArithDim op l r) =
+          internaliseDim (ArithDim op l r)
 
         -- | Add vacuous existential type information to a type.  Every
         -- dimension will be its own 'Ext'.

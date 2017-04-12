@@ -145,6 +145,20 @@ checkTypeExp' (TEArray t d loc) = do
           BoundDim <$> checkBoundDim loc v
         checkDimDecl (NamedDim v) =
           NamedDim <$> checkNamedDim loc v
+        checkDimDecl (ArithDim op l r) = do
+          l' <- checkRDimDecl l
+          r' <- checkRDimDecl r
+          return $ ArithDim op l' r'
+
+        checkRDimDecl (RConstDim k) =
+          return $ RConstDim k
+        checkRDimDecl (RNamedDim v) =
+          RNamedDim <$> checkNamedDim loc v
+        checkRDimDecl (RArithDim op l r) = do
+          l' <- checkRDimDecl l
+          r' <- checkRDimDecl r
+          return $ RArithDim op l' r'
+
 checkTypeExp' (TEUnique t loc) = do
   (t', st) <- checkTypeExp' t
   case st of
@@ -295,10 +309,26 @@ checkForDuplicateNamesTypeExp' (TEUnique t _) =
 checkForDuplicateNamesTypeExp' (TEArray te d loc) =
   checkForDuplicateNamesTypeExp' te >> checkDimDecl d
   where checkDimDecl AnyDim = return ()
-        checkDimDecl ConstDim{} = return ()
+        checkDimDecl (ConstDim _) = return ()
         checkDimDecl (NamedDim (QualName [] v)) = seeing UsedFree v loc
         checkDimDecl (NamedDim _) = return ()
         checkDimDecl (BoundDim v) = seeing BoundAsDim v loc
+        checkDimDecl e@(ArithDim op l r) = do
+          l' <- checkRDimDecl l
+          r' <- checkRDimDecl r
+          case (l', r') of
+            ((), ()) -> return ()
+            _ -> throwError $ TypeError loc $ "Error in arithmetic dim" ++ pretty e
+
+        checkRDimDecl (RConstDim _) = return ()
+        checkRDimDecl (RNamedDim (QualName [] v)) = seeing UsedFree v loc
+        checkRDimDecl (RNamedDim _) = return ()
+        checkRDimDecl e@(RArithDim op l r) = do
+          l' <- checkRDimDecl l
+          r' <- checkRDimDecl r
+          case (l', r') of
+            ((), ()) -> return ()
+            _ -> throwError $ TypeError loc $ "Error in arithmetic dim" ++ pretty e
 
 seeing :: MonadTypeChecker m => Bindage -> Name -> SrcLoc
        -> StateT (M.Map (Namespace, Name) (VName, Bindage, SrcLoc)) m ()

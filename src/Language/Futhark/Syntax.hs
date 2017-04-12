@@ -19,6 +19,8 @@ module Language.Futhark.Syntax
   , PrimType(..)
   , ArrayShape (..)
   , DimDecl (..)
+  , RDimDecl (..)
+  , ArithDimOp (..)
   , ShapeDecl (..)
   , Rank (..)
   , TypeName(..)
@@ -162,6 +164,17 @@ class (Eq shape, Ord shape, Monoid shape) => ArrayShape shape where
   -- common information, and fails if they conflict.
   unifyShapes :: shape -> shape -> Maybe shape
 
+-- | What do we allow in an ArithDim
+data ArithDimOp = DimPlus
+                | DimMinus
+                deriving (Eq, Ord, Show)
+
+-- | A restricted DimDecl, for use in ArithDim sub-expressions
+data RDimDecl vn = RNamedDim (QualName vn)
+                 | RArithDim ArithDimOp (RDimDecl vn) (RDimDecl vn)
+                 | RConstDim Int
+                 deriving (Eq, Ord, Show)
+
 -- | Declaration of a dimension size.
 data DimDecl vn = BoundDim vn
                   -- ^ The size of the dimension is this name, in a
@@ -170,6 +183,8 @@ data DimDecl vn = BoundDim vn
                   -- ^ The size of the dimension is this name, which
                   -- must be in scope.  In a return type, this will
                   -- give rise to an assertion.
+                | ArithDim ArithDimOp (RDimDecl vn) (RDimDecl vn)
+                  -- ^ An arithmetic combination of dimensions (eg: [m+n])
                 | ConstDim Int
                   -- ^ The size is a constant.
                 | AnyDim

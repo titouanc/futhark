@@ -778,6 +778,7 @@ patIdentsGen f (PatternAscription p t) =
   where dimIdent _ AnyDim            = Nothing
         dimIdent _ (ConstDim _)      = Nothing
         dimIdent _ (NamedDim _)      = Nothing
+        dimIdent _ (ArithDim _ _ _)  = Nothing
         dimIdent loc (BoundDim name) = Just $ f name loc
 
 -- | The type of values bound by the pattern.

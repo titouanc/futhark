@@ -413,12 +413,30 @@ TypeExp :: { UncheckedTypeExp }
 
 FieldType : FieldId ':' TypeExp { (fst $1, $3) }
 
+RDimDecl :: { RDimDecl Name }
+         : QualName
+           { RNamedDim (fst $1) }
+         | RDimDecl '+...' RDimDecl
+           { RArithDim DimPlus $1 $3}
+         | RDimDecl '-' RDimDecl
+           { RArithDim DimMinus $1 $3}
+         | declit
+           { let L _ (DECLIT n) = $1
+             in RConstDim (fromIntegral n) }
+         | intlit
+           { let L _ (INTLIT n) = $1
+             in RConstDim (fromIntegral n) }
+
 DimDecl :: { DimDecl Name }
         : QualName
           { NamedDim (fst $1) }
         | '#' id
           { let L _ (ID name) = $2
             in BoundDim name }
+        | RDimDecl '+...' RDimDecl
+          { ArithDim DimPlus $1 $3}
+        | RDimDecl '-' RDimDecl
+          { ArithDim DimMinus $1 $3}
         | declit
           { let L _ (DECLIT n) = $1
             in ConstDim (fromIntegral n) }
