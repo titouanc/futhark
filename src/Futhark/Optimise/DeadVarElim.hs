@@ -85,6 +85,8 @@ deadCodeElimLambda lam =
 deadCodeElimSubExp :: SubExp -> DCElimM SubExp
 deadCodeElimSubExp (Var ident)  = Var <$> deadCodeElimVName ident
 deadCodeElimSubExp (Constant v) = return $ Constant v
+deadCodeElimSubExp (BinExp op l r) =
+  BinExp op <$> deadCodeElimSubExp l <*> deadCodeElimSubExp r
 
 deadCodeElimBodyM :: Attributes lore => Body lore -> DCElimM (Body lore)
 

@@ -568,6 +568,8 @@ matchFunctionReturnType fname rettype result = do
   where ts = map returnsToType rettype
         checkResultSubExp Constant{} =
           return ()
+        checkResultSubExp BinExp{} =
+          return ()
         checkResultSubExp (Var v) = do
           attr <- varMemBound v
           case attr of
@@ -699,6 +701,8 @@ matchPatternToReturns wrong (Pattern ctxbindees valbindees) rt = do
       popSizeIfInCtx int32 v --  *May* be bound here.
     matchArrayDim (Var v) (Ext _) =
       popSizeFromCtx int32 v --  *Has* to be bound here.
+    matchArrayDim (BinExp op l r) x =
+      matchArrayDim l x >> matchArrayDim r x
     matchArrayDim Constant{} (Free _) =
       return ()
     matchArrayDim Constant{} (Ext _) =

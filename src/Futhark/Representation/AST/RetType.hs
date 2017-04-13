@@ -54,7 +54,8 @@ expectedTypes shapes value_ts args = map (correctDims . typeOf) value_ts
           correctDim (Constant v) = Constant v
           correctDim (Var v)
             | Just se <- M.lookup v parammap = se
-            | otherwise                       = Var v
+            | otherwise                      = Var v
+          correctDim (BinExp op l r) = BinExp op (correctDim l) (correctDim r)
 
 instance IsRetType ExtRetType where
   primRetType = ExtRetType . staticShapes . return . Prim
@@ -83,3 +84,4 @@ instance IsRetType ExtRetType where
           correctDim (Var v)
             | Just se <- M.lookup v parammap = se
             | otherwise                       = Var v
+          correctDim (BinExp op l r) = BinExp op (correctDim l) (correctDim r)

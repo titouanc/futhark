@@ -62,6 +62,8 @@ import Futhark.Representation.AST.Attributes.Scope
 subExpType :: HasScope t m => SubExp -> m Type
 subExpType (Constant val) = pure $ Prim $ primValueType val
 subExpType (Var name)     = lookupType name
+subExpType (BinExp _ l _) = subExpType l
+
 
 -- | @mapType f arrts@ wraps each element in the return type of @f@ in
 -- an array with size equal to the outermost dimension of the first

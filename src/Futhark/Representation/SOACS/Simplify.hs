@@ -39,6 +39,7 @@ import Futhark.Optimise.Simplifier.Rule
 import Futhark.Optimise.Simplifier.ClosedForm
 import Futhark.Optimise.Simplifier.Lore
 import Futhark.Tools
+import Language.Futhark.Syntax (ArithDimOp(..))
 import qualified Futhark.Analysis.SymbolTable as ST
 import qualified Futhark.Analysis.UsageTable as UT
 import qualified Futhark.Analysis.ScalExp as SE
@@ -88,12 +89,15 @@ simplifySOAC (Stream cs outerdim form lam arr) = do
   arr' <- mapM Engine.simplify arr
   vtable <- Engine.getVtable
   let (chunk:_) = extLambdaParams lam
-      se_outer = case outerdim of
+      se_outer d = case d of
                     Var idd    -> fromMaybe (SE.Id idd int32) (ST.lookupScalExp idd vtable)
                     Constant c -> SE.Val c
+                    BinExp t l r  -> (op t) (se_outer l) (se_outer r) where
+                      op DimPlus = SE.SPlus
+                      op DimMinus = SE.SMinus
       -- extension: one may similarly treat iota stream-array case,
       -- by setting the bounds to [0, se_outer-1]
-      parbnds  = [ (chunk, 0, se_outer) ]
+      parbnds  = [ (chunk, 0, se_outer outerdim) ]
   lam' <- Engine.simplifyExtLambda lam (getStreamAccums form) parbnds
   return $ Stream cs' outerdim' form' lam' arr'
   where simplifyStreamForm (MapLike o) =
@@ -199,6 +203,7 @@ liftIdentityMapping (_, usages) (Let pat _ (Op (Map cs outersize fun arrs))) =
 
         freeOrConst (Var v)    = v `S.member` free
         freeOrConst Constant{} = True
+        freeOrConst (BinExp _ l r) = freeOrConst l || freeOrConst r
 
         checkInvariance (outId, Var v, _) (invariant, mapresult, rettype')
           | Just inp <- M.lookup v inputMap =

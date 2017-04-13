@@ -10,13 +10,15 @@ module Futhark.Analysis.PrimExp.Convert
     , module Futhark.Analysis.PrimExp
   ) where
 
-import           Control.Applicative
+import Control.Applicative
 
-import           Prelude
+import Prelude
 
-import           Futhark.Analysis.PrimExp
-import           Futhark.Construct
-import           Futhark.Representation.AST
+import Futhark.Analysis.PrimExp
+import Futhark.Construct
+import Futhark.Representation.AST
+import Language.Futhark.Syntax (ArithDimOp(..))
+import Futhark.Representation.Primitive (BinOp(..))
 
 -- | Convert a 'PrimExp' to a Futhark expression.  The provided
 -- function converts the leaves.
@@ -72,3 +74,7 @@ primExpFromSubExpM f = primExpFromExp f . BasicOp . SubExp
 primExpFromSubExp :: PrimType -> SubExp -> PrimExp VName
 primExpFromSubExp t (Var v)      = LeafExp v t
 primExpFromSubExp _ (Constant v) = ValueExp v
+primExpFromSubExp t (BinExp op l r) =
+    BinOpExp (bop op) (primExpFromSubExp t l) (primExpFromSubExp t r) where
+      bop DimPlus  = Add Int32
+      bop DimMinus = Sub Int32

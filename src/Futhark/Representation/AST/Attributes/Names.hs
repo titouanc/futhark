@@ -183,6 +183,7 @@ instance FreeIn Ident where
 instance FreeIn SubExp where
   freeIn (Var v) = freeIn v
   freeIn Constant{} = mempty
+  freeIn (BinExp _ l r) = freeIn l `mappend` freeIn r
 
 instance FreeIn Shape where
   freeIn = mconcat . map freeIn . shapeDims

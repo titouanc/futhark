@@ -64,6 +64,7 @@ import Prelude
 
 import Language.Futhark.Core
 import Futhark.Representation.Primitive
+import Language.Futhark.Syntax (ArithDimOp(..))
 
 -- | The size of an array type as a list of its dimension sizes.  If a
 -- variable, that variable must be in scope where this array is used.
@@ -217,6 +218,7 @@ type Certificates = [VName]
 -- guaranteed to complete in constant time.
 data SubExp = Constant PrimValue
             | Var      VName
+            | BinExp   ArithDimOp SubExp SubExp
             deriving (Show, Eq, Ord)
 
 -- | A function parameter.

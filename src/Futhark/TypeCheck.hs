@@ -411,8 +411,9 @@ aliases (LetInfo (als, _)) = unNames als
 aliases _ = mempty
 
 subExpAliasesM :: SubExp -> TypeM lore Names
-subExpAliasesM Constant{} = return mempty
-subExpAliasesM (Var v)    = lookupAliases v
+subExpAliasesM Constant{}     = return mempty
+subExpAliasesM (Var v)        = lookupAliases v
+subExpAliasesM (BinExp _ l r) = subExpAliasesM l >> subExpAliasesM r
 
 lookupFun :: Checkable lore =>
              Name
@@ -606,6 +607,9 @@ checkSubExp (Constant val) =
 checkSubExp (Var ident) = context ("In subexp " ++ pretty ident) $ do
   observe ident
   lookupType ident
+checkSubExp e@(BinExp op l r) = context ("In subexp " ++ pretty e) $ do
+  checkSubExp l
+  checkSubExp r
 
 checkStms :: Checkable lore =>
              [Stm (Aliases lore)] -> TypeM lore a

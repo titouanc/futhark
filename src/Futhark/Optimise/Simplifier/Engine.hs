@@ -322,6 +322,7 @@ asserted (Var name) = do
                            UT.equalToUsage yvar x
                          _ -> return ()
              _ -> return ()
+asserted (BinExp _ l r) = asserted l >> asserted r
 
 tapUsage :: SimpleM lore a -> SimpleM lore (a, UT.UsageTable)
 tapUsage m = do (x,needs) <- listenNeed m
@@ -723,6 +724,8 @@ instance Simplifiable SubExp where
                            return $ Var id'
       _              -> do usedName name
                            return $ Var name
+  simplify (BinExp op l r) = 
+    BinExp op <$> simplify l <*> simplify r
   simplify (Constant v) =
     return $ Constant v
 

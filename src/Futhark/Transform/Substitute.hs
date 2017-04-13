@@ -65,6 +65,9 @@ instance Substitute VName where
 instance Substitute SubExp where
   substituteNames substs (Var v) = Var $ substituteNames substs v
   substituteNames _ (Constant v) = Constant v
+  substituteNames s (BinExp op l r) = BinExp op l' r' where
+    l' = substituteNames s l
+    r' = substituteNames s r
 
 instance Substitutable lore => Substitute (Exp lore) where
   substituteNames substs = mapExp $ replace substs

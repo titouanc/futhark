@@ -530,37 +530,37 @@ optimizations = [iswim, scanToScanomap]
 
 iswim :: Maybe [VName] -> SOAC -> SOAC.ArrayTransforms
       -> TryFusion (SOAC, SOAC.ArrayTransforms)
-iswim _ (SOAC.Scan cs w scan_fun scan_input) ots
-  | Just (map_pat, map_cs, map_w, map_fun) <- rwimPossible scan_fun,
-    (nes, arrs) <- unzip scan_input,
-    Just nes_names <- mapM subExpVar nes = do
+-- iswim _ (SOAC.Scan cs w scan_fun scan_input) ots
+--   | Just (map_pat, map_cs, map_w, map_fun) <- rwimPossible scan_fun,
+--     (nes, arrs) <- unzip scan_input,
+--     Just nes_names <- mapM subExpVar nes = do
 
-      let nes_idents = zipWith Ident nes_names $ lambdaReturnType scan_fun
-          nes' = map SOAC.identInput nes_idents
-          map_arrs' = nes' ++ map (SOAC.transposeInput 0 1) arrs
-          (scan_acc_params, scan_elem_params) =
-            splitAt (length arrs) $ lambdaParams scan_fun
-          map_params = map removeParamOuterDim scan_acc_params ++
-                       map (setParamOuterDimTo w) scan_elem_params
-          map_rettype = map (setOuterDimTo w) $ lambdaReturnType scan_fun
-          map_fun' = Lambda map_params map_body map_rettype
+--       let nes_idents = zipWith Ident nes_names $ lambdaReturnType scan_fun
+--           nes' = map SOAC.identInput nes_idents
+--           map_arrs' = nes' ++ map (SOAC.transposeInput 0 1) arrs
+--           (scan_acc_params, scan_elem_params) =
+--             splitAt (length arrs) $ lambdaParams scan_fun
+--           map_params = map removeParamOuterDim scan_acc_params ++
+--                        map (setParamOuterDimTo w) scan_elem_params
+--           map_rettype = map (setOuterDimTo w) $ lambdaReturnType scan_fun
+--           map_fun' = Lambda map_params map_body map_rettype
 
-          scan_params = lambdaParams map_fun
-          scan_body = lambdaBody map_fun
-          scan_rettype = lambdaReturnType map_fun
-          scan_fun' = Lambda scan_params scan_body scan_rettype
-          scan_input' = map (first Var) $
-                        uncurry zip $ splitAt (length nes') $ map paramName map_params
+--           scan_params = lambdaParams map_fun
+--           scan_body = lambdaBody map_fun
+--           scan_rettype = lambdaReturnType map_fun
+--           scan_fun' = Lambda scan_params scan_body scan_rettype
+--           scan_input' = map (first Var) $
+--                         uncurry zip $ splitAt (length nes') $ map paramName map_params
 
-          map_body = mkBody [Let (setPatternOuterDimTo w map_pat) () $
-                             Op $ Futhark.Scan cs w scan_fun' scan_input'] $
-                            map Var $ patternNames map_pat
+--           map_body = mkBody [Let (setPatternOuterDimTo w map_pat) () $
+--                              Op $ Futhark.Scan cs w scan_fun' scan_input'] $
+--                             map Var $ patternNames map_pat
 
-      let perm = case lambdaReturnType map_fun of
-            []  -> []
-            t:_ -> 1 : 0 : [2..arrayRank t]
-      return (SOAC.Map map_cs map_w map_fun' map_arrs',
-              ots SOAC.|> SOAC.Rearrange map_cs perm)
+--       let perm = case lambdaReturnType map_fun of
+--             []  -> []
+--             t:_ -> 1 : 0 : [2..arrayRank t]
+--       return (SOAC.Map map_cs map_w map_fun' map_arrs',
+--               ots SOAC.|> SOAC.Rearrange map_cs perm)
 
 iswim _ _ _ =
   fail "ISWIM does not apply."

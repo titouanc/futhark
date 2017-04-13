@@ -133,12 +133,13 @@ safeBody = all (safeExp . bindingExp) . bodyStms
 -- | Return the variable names used in 'Var' subexpressions.  May contain
 -- duplicates.
 subExpVars :: [SubExp] -> [VName]
-subExpVars = mapMaybe subExpVar
+subExpVars x = foldl (++) [] $ map subExpVar x
 
 -- | If the 'SubExp' is a 'Var' return the variable name.
-subExpVar :: SubExp -> Maybe VName
-subExpVar (Var v)    = Just v
-subExpVar Constant{} = Nothing
+subExpVar :: SubExp -> [VName]
+subExpVar (Var v)    = [v]
+subExpVar Constant{} = []
+subExpVar (BinExp op l r) = subExpVar l ++ subExpVar r
 
 -- | Return the variable dimension sizes.  May contain
 -- duplicates.

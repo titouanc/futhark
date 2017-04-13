@@ -20,6 +20,7 @@ import Data.Monoid
 
 import Prelude
 
+import Language.Futhark.Syntax (ArithDimOp(..))
 import Futhark.Representation.Primitive hiding (SQuot, SRem, SDiv, SMod, SSignum)
 import Futhark.Representation.AST hiding (SQuot, SRem, SDiv, SMod, SSignum)
 import qualified Futhark.Representation.AST as AST
@@ -232,6 +233,10 @@ subExpToScalExp' look (Var v)
             " of type " ++ pretty t
 subExpToScalExp' _ (Constant val) =
   pure $ Val val
+subExpToScalExp' look (BinExp op l r) = 
+  (f op) <$> subExpToScalExp' look l <*> subExpToScalExp' look r where
+    f DimPlus  = SPlus
+    f DimMinus = SMinus
 
 -- | If you have a scalar expression that has been created with
 -- incomplete symbol table information, you can use this function to

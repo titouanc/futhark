@@ -189,8 +189,9 @@ instance Renameable lore => Rename (FunDef lore) where
       return $ FunDef entry fname ret' params' body'
 
 instance Rename SubExp where
-  rename (Var v)      = Var <$> rename v
-  rename (Constant v) = return $ Constant v
+  rename (Var v)         = Var <$> rename v
+  rename (Constant v)    = return $ Constant v
+  rename (BinExp op l r) = BinExp op <$> rename l <*> rename r
 
 instance Rename attr => Rename (ParamT attr) where
   rename (Param name attr) = Param <$> rename name <*> rename attr

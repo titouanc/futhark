@@ -186,10 +186,12 @@ instance (Attributes lore, Aliased lore) => AliasedOp (KernelExp lore) where
     -- GroupStream always consumes array-typed accumulators.  This
     -- guarantees that we can use their storage for the result of the
     -- lambda.
-    S.map consumedArray $
+    S.foldl (\acc -> \x -> acc `S.union` consumedArray x) (S.fromList []) $
     S.fromList (map paramName acc_params) <> consumedInBody body
     where GroupStreamLambda _ _ acc_params arr_params body = lam
-          consumedArray v = fromMaybe v $ subExpVar =<< lookup v params_to_arrs
+          consumedArray v = let x = lookup v params_to_arrs in
+              case x of Just y -> S.fromList $ subExpVar y
+                        Nothing -> S.fromList []
           params_to_arrs = zip (map paramName $ acc_params ++ arr_params) $
                            accs ++ map Var arrs
 

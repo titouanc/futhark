@@ -102,6 +102,7 @@ import Futhark.Construct (fullSliceNum)
 import Futhark.MonadFreshNames
 import Futhark.Error
 import Futhark.Util
+import Language.Futhark.Syntax (ArithDimOp(..))
 
 -- | How to compile an 'Op'.
 type OpCompiler lore op = Destination -> Op lore -> ImpM lore op ()
@@ -877,6 +878,8 @@ subExpToDimSize (Constant (IntValue (Int32Value i))) =
   return $ Imp.ConstSize $ fromIntegral i
 subExpToDimSize Constant{} =
   compilerBugS "Size subexp is not an int32 or int64 constant."
+subExpToDimSize (BinExp op l r) =
+  Imp.ExpSize op <$> subExpToDimSize l <*> subExpToDimSize r
 
 compileSubExpTo :: ValueDestination -> SubExp -> ImpM lore op ()
 compileSubExpTo dest se = copyDWIMDest dest [] se []
@@ -884,6 +887,10 @@ compileSubExpTo dest se = copyDWIMDest dest [] se []
 compileSubExp :: SubExp -> ImpM lore op Imp.Exp
 compileSubExp (Constant v) =
   return $ Imp.ValueExp v
+compileSubExp (BinExp op l r) =
+  Imp.BinOpExp (bop op) <$> compileSubExp l <*> compileSubExp r where
+    bop DimPlus  = Add Int32
+    bop DimMinus = Sub Int32
 compileSubExp (Var v) = do
   t <- lookupType v
   case t of
@@ -957,6 +964,7 @@ destinationFromPattern (Pattern ctxElems valElems) =
                       nullifyFreeDim (Imp.VarSize v)
                         | isctx v   = Just v
                         | otherwise = Nothing
+                      nullifyFreeDim (Imp.ExpSize op l r) = Nothing
                   memsize <- entryMemSize <$> lookupMemory mem
                   let shape' = map nullifyFreeDim shape
                       memdest

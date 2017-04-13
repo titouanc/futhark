@@ -29,6 +29,7 @@ import Prelude
 
 import Futhark.Representation.SOACS
 import Futhark.Util
+import Language.Futhark.Syntax (ArithDimOp(..))
 
 -- | An error happened during execution, and this is why.
 data InterpreterError =
@@ -402,6 +403,12 @@ single v = [v]
 evalSubExp :: SubExp -> FutharkM Value
 evalSubExp (Var ident)  = lookupVar ident
 evalSubExp (Constant v) = return $ PrimVal v
+evalSubExp (BinExp DimPlus l r) = do
+  r:_ <- evalBasicOp $ BinOp (Add Int32) l r
+  return r
+evalSubExp (BinExp DimMinus l r) = do
+  r:_ <- evalBasicOp $ BinOp (Sub Int32) l r
+  return r
 
 evalDimIndex :: DimIndex SubExp -> FutharkM (DimIndex Int)
 evalDimIndex (DimFix d) =

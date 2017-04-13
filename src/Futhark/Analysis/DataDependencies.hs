@@ -49,6 +49,7 @@ dataDependencies' startdeps = foldl grow startdeps . bodyStms
 depsOf :: Dependencies -> SubExp -> Names
 depsOf _ (Constant _) = S.empty
 depsOf deps (Var v)   = depsOfVar deps v
+depsOf deps (BinExp op l r) = depsOf deps l `S.union` depsOf deps r
 
 depsOfVar :: Dependencies -> VName -> Names
 depsOfVar deps name = S.insert name $ M.findWithDefault S.empty name deps

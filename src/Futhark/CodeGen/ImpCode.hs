@@ -67,6 +67,7 @@ import qualified Data.Set as S
 import Prelude hiding (foldr)
 
 import Language.Futhark.Core
+import Language.Futhark.Syntax (ArithDimOp(..))
 import Futhark.Representation.Primitive
 import Futhark.Representation.AST.Syntax (Space(..), SpaceId)
 import Futhark.Representation.AST.Attributes.Names
@@ -78,6 +79,7 @@ import Futhark.Util.Pretty hiding (space)
 
 data Size = ConstSize Int64
           | VarSize VName
+          | ExpSize ArithDimOp Size Size
           deriving (Eq, Show)
 
 type MemSize = Size
@@ -224,6 +226,10 @@ memSizeToExp = bytes . sizeToExp
 sizeToExp :: Size -> Exp
 sizeToExp (VarSize v)   = LeafExp (ScalarVar v) (IntType Int32)
 sizeToExp (ConstSize x) = ValueExp $ IntValue $ Int32Value $ fromIntegral x
+sizeToExp (ExpSize op l r) =
+  BinOpExp (bop op) (sizeToExp l) (sizeToExp r) where
+    bop DimPlus  = Add Int32
+    bop DimMinus = Sub Int32
 
 var :: VName -> PrimType -> Exp
 var = LeafExp . ScalarVar

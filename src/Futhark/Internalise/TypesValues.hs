@@ -132,12 +132,19 @@ internaliseDeclType' orig_t =
         internaliseDim AnyDim =
           Ext <$> newId
         internaliseDim (ConstDim n) =
-          return $ Free $ intConst I.Int32 $ toInteger n
+          Free <$> internaliseRDim (RConstDim n)
         internaliseDim (BoundDim name) =
           Ext <$> knownOrNewId name
-        internaliseDim (NamedDim name) = do
+        internaliseDim (NamedDim name) =
+          Free <$> internaliseRDim (RNamedDim name)
+        internaliseDim (ArithDim op l r) =
+          Free <$> internaliseRDim (RArithDim op l r)
+
+        internaliseRDim (RConstDim n) =
+          return $ intConst I.Int32 $ toInteger n
+        internaliseRDim (RNamedDim name) = do
           subst <- asks $ M.lookup (E.qualLeaf name) . envSubsts
-          I.Free <$> case subst of
+          case subst of
             Just [v] -> return v
             _ -> do -- Then it must be a constant.
               let fname = nameFromString $ pretty name ++ "f"
@@ -147,17 +154,10 @@ internaliseDeclType' orig_t =
                 Nothing -> do new <- lift $ newVName $ baseString $ qualLeaf name
                               put (i, m, (fname,new):cm)
                               return $ I.Var new
-        internaliseDim (ArithDim op l r) = do
+        internaliseRDim (RArithDim op l r) = do
           l' <- internaliseRDim l
           r' <- internaliseRDim r
-          return $ I.Comb op l' r'
-
-        internaliseRDim (RConstDim n) =
-          internaliseDim (ConstDim n)
-        internaliseRDim (RNamedDim name) =
-          internaliseDim (NamedDim name)
-        internaliseRDim (RArithDim op l r) =
-          internaliseDim (ArithDim op l r)
+          return $ I.BinExp op l' r'
 
         -- | Add vacuous existential type information to a type.  Every
         -- dimension will be its own 'Ext'.
