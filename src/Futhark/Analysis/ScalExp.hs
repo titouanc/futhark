@@ -174,8 +174,12 @@ type LookupVar = VName -> Maybe ScalExp
 -- | Non-recursively convert a subexpression to a 'ScalExp'.  The
 -- (scalar) type of the subexpression must be given in advance.
 subExpToScalExp :: SubExp -> PrimType -> ScalExp
-subExpToScalExp (Var v) t        = Id v t
-subExpToScalExp (Constant val) _ = Val val
+subExpToScalExp (Var v) t              = Id v t
+subExpToScalExp (Constant val) _       = Val val
+subExpToScalExp (BinExp DimPlus l r) t =
+    SPlus (subExpToScalExp l t) (subExpToScalExp r t)
+subExpToScalExp (BinExp DimMinus l r) t =
+    SMinus (subExpToScalExp l t) (subExpToScalExp r t)
 
 toScalExp :: (HasScope t f, Monad f) =>
              LookupVar -> Exp lore -> f (Maybe ScalExp)
