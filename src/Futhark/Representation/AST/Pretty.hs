@@ -19,16 +19,16 @@ module Futhark.Representation.AST.Pretty
   )
   where
 
-import           Data.Array                                     (elems,
-                                                                 listArray)
-import           Data.Maybe
-import           Data.Monoid
+import Data.Array (elems, listArray)
+import Data.Maybe
+import Data.Monoid
 
-import           Futhark.Util.Pretty
+import Futhark.Util.Pretty
 
-import           Futhark.Representation.AST.Attributes.Patterns
-import           Futhark.Representation.AST.Syntax
-import           Futhark.Util
+import Language.Futhark.Syntax (ArithDimOp(..))
+import Futhark.Representation.AST.Attributes.Patterns
+import Futhark.Representation.AST.Syntax
+import Futhark.Util
 
 -- | Class for values that may have some prettyprinted annotation.
 class PrettyAnnot a where
@@ -125,6 +125,8 @@ instance Pretty Ident where
 instance Pretty SubExp where
   ppr (Var v)      = ppr v
   ppr (Constant v) = ppr v
+  ppr (BinExp DimPlus l r) = ppr l <> text " + " <> ppr r
+  ppr (BinExp DimMinus l r) = ppr l <> text " - " <> ppr r
 
 instance PrettyLore lore => Pretty (Body lore) where
   ppr (Body _ (bnd:bnds) res) =
